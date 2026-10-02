@@ -53,6 +53,8 @@ def test_markdown_parser_blocks():
 
 
 def test_pack_metadata_and_signature(store, demo_case):
+    pytest.importorskip("openpyxl", reason="plugin python_dependency, not in the core test group")
+    pytest.importorskip("reportlab", reason="plugin python_dependency, not in the core test group")
     s = service.open_case(store, str(demo_case)); a = service.start_audit(store, s["case"]["id"], "initial")
     folder = Path(a["folder"])
     cf.write_json(folder, "03_Extracted_Data/model.json", {"kpis": {"Ingreso": 1000.5}, "audit_trail": [{"figure": "Ingreso", "value": 1000.5, "sheet": "07", "documents": ["d1"], "confidence": "CONFIRMED", "method": "m"}]})

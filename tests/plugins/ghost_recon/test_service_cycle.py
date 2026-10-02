@@ -44,6 +44,9 @@ def test_seal_requires_completion_unless_forced(store, demo_case):
 
 
 def test_full_cycle_rerun_dedupe_and_review(store, demo_case):
+    # sealing requires the complete pack (pdf + xlsx), built with the plugin's own python_dependencies
+    pytest.importorskip("openpyxl", reason="plugin python_dependency, not in the core test group")
+    pytest.importorskip("reportlab", reason="plugin python_dependency, not in the core test group")
     cid, a = _initial(store, demo_case)
     aid = a["audit"]["id"]; folder = Path(a["folder"])
     plan = swarm.plan_extraction(store, aid)
