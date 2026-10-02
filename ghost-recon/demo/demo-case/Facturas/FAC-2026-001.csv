@@ -1,0 +1,2 @@
+factura,fecha,cliente,concepto,cantidad,precio_unitario,total,moneda
+FAC-2026-001,2026-01-04,Beta Corp,Terminal modelo T1,10,1500,15000,USD

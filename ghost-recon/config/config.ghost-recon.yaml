@@ -1,0 +1,30 @@
+# Fragment to merge into <HERMES_HOME>/config.yaml (install.sh applies the same values with `hermes config set`).
+plugins:
+  enabled:
+    - ghost-recon
+  entries:
+    ghost-recon:
+      settings:
+        audits_dirname: GhostRecon_Audits
+        base_currency: USD
+        language: es
+        swarm_max_parallel: 6
+        swarm_max_files_per_task: 60
+        report_formats: [md, pdf, xlsx]
+        tavily_base_url: https://api.tavily.com
+        session_reminder: true
+web:
+  backend: tavily          # web_search / web_extract use Tavily (TAVILY_API_KEY in .env)
+delegation:
+  max_concurrent_children: 10   # swarm waves are sized by swarm_max_parallel (<= this)
+  max_summary_chars: 24000
+# Optional: Tavily MCP server (research/crawl/map tools) — needs node/npx
+# mcp_servers:
+#   tavily:
+#     command: npx
+#     args: ["-y", "tavily-mcp@latest"]
+#     env:
+#       TAVILY_API_KEY: ${TAVILY_API_KEY}
+#     lazy: true
+# Optional: weekly evidence pass
+#   hermes cron create "0 8 * * 1" "/rerun-case /srv/casos/acme" --deliver origin

@@ -1,0 +1,2 @@
+factura,fecha,cliente,concepto,cantidad,precio_unitario,total,moneda
+FAC-2026-002,2026-02-02,Gamma SA,Terminal modelo T1,5,1600,8000,USD

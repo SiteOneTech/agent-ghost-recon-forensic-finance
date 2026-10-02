@@ -1,0 +1,67 @@
+name: ghost-recon
+version: 0.1.0
+description: "Ghost Recon — autonomous financial forensic audit agent: case & audit management (local SQLite), evidence intake with hashes and dedupe, auditor swarms via delegate_task, Tavily research, md/pdf/xlsx deliverable packs, immutable sealed audits. Commands: /new-open-case, /rerun-case, /review-case (skills), /gr-cases, /gr-case, /gr-doctor, /gr-help; CLI: hermes ghostrecon."
+author: "Jean C. Garcia (Sitio Uno / Ghost Recon) + Hermes Agent"
+kind: standalone
+license: MIT
+homepage: https://www.ghostrecon.ai/
+tags: [forensic, audit, finance, cases, swarm, research]
+platforms:
+  - linux
+  - macos
+  - windows
+provides_tools:
+  - gr_case_open
+  - gr_case_status
+  - gr_case_list
+  - gr_audit_start
+  - gr_evidence_index
+  - gr_finding_upsert
+  - gr_criteria_add
+  - gr_research
+  - gr_swarm_plan
+  - gr_run_record
+  - gr_report_build
+  - gr_audit_seal
+  - gr_review_plan
+  - gr_timeline
+provides_hooks:
+  - on_session_start
+optional_env:
+  - TAVILY_API_KEY
+python_dependencies:
+  - "openpyxl>=3.1,<4"
+  - "reportlab>=4.0,<6"
+config_schema:
+  audits_dirname:
+    type: str
+    default: GhostRecon_Audits
+    description: "Name of the output folder created inside each case folder (never inside the evidence files)."
+  base_currency:
+    type: str
+    default: USD
+    description: "Default reporting currency for new cases."
+  language:
+    type: str
+    default: es
+    description: "Default language of deliverables (es|en)."
+  swarm_max_parallel:
+    type: int
+    default: 6
+    description: "Sub-agents per wave for extraction swarms (capped by delegation.max_concurrent_children)."
+  swarm_max_files_per_task:
+    type: int
+    default: 60
+    description: "Files per extraction sub-agent before a block is split."
+  report_formats:
+    type: list
+    default: [md, pdf, xlsx]
+    description: "Formats produced by gr_report_build when none is requested."
+  tavily_base_url:
+    type: str
+    default: https://api.tavily.com
+    description: "Tavily API base URL (override for proxies)."
+  session_reminder:
+    type: bool
+    default: true
+    description: "Show open cases / open audits in the session-start reminder."
