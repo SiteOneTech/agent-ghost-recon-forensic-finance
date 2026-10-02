@@ -1,0 +1,6 @@
+BANCO DEMO — Cuenta ****4832 — Febrero 2026
+Saldo anterior 17,500.00
+03/02 Depósito cliente Gamma SA 8,000.00
+15/02 Pago proveedor Fabrica Ltd -9,500.00
+27/02 Transferencia a socio B -3,000.00
+Saldo nuevo 13,000.00

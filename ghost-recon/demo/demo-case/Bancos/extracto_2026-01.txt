@@ -1,0 +1,7 @@
+BANCO DEMO — Cuenta ****4832 — Enero 2026
+Saldo anterior 10,000.00
+05/01 Depósito cliente Beta Corp 15,000.00
+12/01 Wire out beneficiario no impreso -4,000.00
+20/01 Pago Taller XYZ -1,500.00
+28/01 Zelle a J. Perez -2,000.00
+Saldo nuevo 17,500.00

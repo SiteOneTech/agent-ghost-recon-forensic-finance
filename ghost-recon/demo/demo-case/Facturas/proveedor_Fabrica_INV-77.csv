@@ -1,0 +1,2 @@
+invoice,date,supplier,item,qty,unit_cost,total,currency
+INV-77,2026-02-10,Fabrica Ltd,Terminal T1 lot 3,20,475,9500,USD
