@@ -59,6 +59,29 @@ If a skill is missing from this list but present in the repo, the catalog is reg
 | [`email-inbox-triage`](../user-guide/skills/bundled/email/email-email-inbox-triage.md) | Triage an inbox: prioritize threads, draft replies safely. | `email/email-inbox-triage` |
 | [`himalaya`](../user-guide/skills/bundled/email/email-himalaya.md) | Himalaya CLI: IMAP/SMTP email from terminal. | `email/himalaya` |
 
+## ghost-recon
+
+| Skill | Description | Path |
+|-------|-------------|------|
+| [`ghost-recon-block-auditor`](../user-guide/skills/bundled/ghost-recon/ghost-recon-ghost-recon-block-auditor.md) | Swarm child protocol: extract one evidence block. | `ghost-recon/ghost-recon-block-auditor` |
+| [`ghost-recon-counterparty-response`](../user-guide/skills/bundled/ghost-recon/ghost-recon-ghost-recon-counterparty-response.md) | Audit a counterparty's reply claim by claim. | `ghost-recon/ghost-recon-counterparty-response` |
+| [`ghost-recon-deliverables`](../user-guide/skills/bundled/ghost-recon/ghost-recon-ghost-recon-deliverables.md) | Build, sign and QA the Ghost Recon deliverable set. | `ghost-recon/ghost-recon-deliverables` |
+| [`ghost-recon-evidence-pass`](../user-guide/skills/bundled/ghost-recon/ghost-recon-ghost-recon-evidence-pass.md) | Procedure for a new evidence batch on an audited case. | `ghost-recon/ghost-recon-evidence-pass` |
+| [`ghost-recon-forensic-audit`](../user-guide/skills/bundled/ghost-recon/ghost-recon-ghost-recon-forensic-audit.md) | Ghost Recon forensic audit method, phases and rules. | `ghost-recon/ghost-recon-forensic-audit` |
+| [`ghost-recon-forensic-techniques`](../user-guide/skills/bundled/ghost-recon/ghost-recon-ghost-recon-forensic-techniques.md) | Forensic procedures by mission type for Ghost Recon audits. | `ghost-recon/ghost-recon-forensic-techniques` |
+| [`ghost-recon-report-pack`](../user-guide/skills/bundled/ghost-recon/ghost-recon-ghost-recon-report-pack.md) | Write the narrative and build the md/pdf/xlsx pack. | `ghost-recon/ghost-recon-report-pack` |
+| [`ghost-recon-research`](../user-guide/skills/bundled/ghost-recon/ghost-recon-ghost-recon-research.md) | External research agent with forensic provenance rules. | `ghost-recon/ghost-recon-research` |
+| [`ghost-recon-role-accounting`](../user-guide/skills/bundled/ghost-recon/ghost-recon-ghost-recon-role-accounting.md) | Accounting lens for a case review: entries and controls. | `ghost-recon/ghost-recon-role-accounting` |
+| [`ghost-recon-role-auditor`](../user-guide/skills/bundled/ghost-recon/ghost-recon-ghost-recon-role-auditor.md) | Audit-quality lens for a case review: coverage, confidence. | `ghost-recon/ghost-recon-role-auditor` |
+| [`ghost-recon-role-financial`](../user-guide/skills/bundled/ghost-recon/ghost-recon-ghost-recon-role-financial.md) | Financial lens for a case review: cash, profit, ranges. | `ghost-recon/ghost-recon-role-financial` |
+| [`ghost-recon-role-legal`](../user-guide/skills/bundled/ghost-recon/ghost-recon-ghost-recon-role-legal.md) | Legal lens for a case review: facts, exposure, requests. | `ghost-recon/ghost-recon-role-legal` |
+| [`ghost-recon-role-mediator`](../user-guide/skills/bundled/ghost-recon/ghost-recon-ghost-recon-role-mediator.md) | Mediation lens for a case review: interests, settlement. | `ghost-recon/ghost-recon-role-mediator` |
+| [`ghost-recon-role-tax`](../user-guide/skills/bundled/ghost-recon/ghost-recon-ghost-recon-role-tax.md) | Tax lens for a case review: effects, filings, exposure. | `ghost-recon/ghost-recon-role-tax` |
+| [`ghost-recon-validation`](../user-guide/skills/bundled/ghost-recon/ghost-recon-ghost-recon-validation.md) | Independent validators: recompute, consistency, adversarial. | `ghost-recon/ghost-recon-validation` |
+| [`new-open-case`](../user-guide/skills/bundled/ghost-recon/ghost-recon-new-open-case.md) | Open a Ghost Recon case and run the full forensic audit. | `ghost-recon/new-open-case` |
+| [`rerun-case`](../user-guide/skills/bundled/ghost-recon/ghost-recon-rerun-case.md) | Evidence pass on a case: new audit, sealed one untouched. | `ghost-recon/rerun-case` |
+| [`review-case`](../user-guide/skills/bundled/ghost-recon/ghost-recon-review-case.md) | Case chronology plus six-role diagnosis and recommendations. | `ghost-recon/review-case` |
+
 ## media
 
 | Skill | Description | Path |
