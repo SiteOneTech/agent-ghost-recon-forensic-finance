@@ -26,6 +26,7 @@ export async function render({ caseId, detail }) {
     { title: "SHA-256", cell: (e) => h("span", { class: "mono", title: e.sha256 }, shortHash(e.sha256)) },
   ];
   async function load(reset) {
+    more.disabled = true; // a double click must not append the same page twice
     try {
       if (reset) {
         rows = [];
@@ -40,6 +41,8 @@ export async function render({ caseId, detail }) {
       more.hidden = !cursor;
     } catch (err) {
       mount(box, errorState(err));
+    } finally {
+      more.disabled = false;
     }
   }
   status.addEventListener("change", () => load(true));

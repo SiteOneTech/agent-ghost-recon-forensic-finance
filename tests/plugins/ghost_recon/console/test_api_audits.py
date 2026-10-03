@@ -85,3 +85,41 @@ def test_downloads_and_verifications_are_audited(login_as, seeded):
     c.get(_url(seeded, "A01") + f"/reports/{rep['id']}/download")
     actions = {e["action"] for e in c.get("/api/v1/system/audit-log").json()["items"]}
     assert {"seal_verify", "report_download"} <= actions
+
+
+def _case_seal_state(client):
+    return client.get("/api/v1/cases").json()["items"][0]["seal_state"]
+
+
+def test_file_that_cannot_be_read_while_verifying_is_saved_as_broken(login_as, seeded, monkeypatch):
+    from plugins.ghost_recon.core import casefolder
+    c = login_as("viewer")
+    assert c.post(_url(seeded, "A01") + "/verify").json()["ok"] is True
+    assert _case_seal_state(c) == "ok"
+
+    def unreadable(path):
+        raise OSError(f"cannot read {path}")
+    monkeypatch.setattr(casefolder, "sha256_file", unreadable)
+    r = c.post(_url(seeded, "A01") + "/verify")
+    assert r.status_code == 200 and r.json()["ok"] is False and r.json()["detail"]["reason"] == "read_error"
+    assert "cannot read" not in r.text  # the exception text (paths) is never stored or returned
+    assert c.get(_url(seeded, "A01")).json()["seal_check"]["ok"] is False
+    assert _case_seal_state(c) == "broken"
+
+
+def test_deleted_manifest_is_saved_as_broken_with_a_reason(login_as, seeded):
+    (seeded["a1_folder"] / "SEALED.json").unlink()
+    c = login_as("viewer")
+    body = c.post(_url(seeded, "A01") + "/verify").json()
+    assert body["ok"] is False and body["detail"]["reason"] and body["detail"]["sealed"] is False
+    assert c.get(_url(seeded, "A01")).json()["seal_check"]["ok"] is False
+    assert _case_seal_state(c) == "broken"
+
+
+def test_ok_check_for_a_different_seal_is_not_reported_as_ok(login_as, seeded, cstore):
+    c = login_as("viewer")
+    cstore.save_seal_check(seeded["a1"], True, {"manifest_sha256": "0" * 64}, "vera")
+    assert c.get(_url(seeded, "A01")).json()["seal_check"] is None
+    assert _case_seal_state(c) == "unverified"
+    cstore.save_seal_check(seeded["a1"], False, {"manifest_sha256": "0" * 64}, "vera")  # a failure always stands
+    assert _case_seal_state(c) == "broken"

@@ -49,9 +49,14 @@ def verify_seal(case_id: str, seq: str, request: Request, principal: Principal =
     audit = get_audit_or_404(ctx, case_id, seq)
     if audit["status"] != "sealed":
         raise ApiError(409, "not_sealed", "solo se verifican auditorías selladas")
-    result = service.verify_audit(ctx.store, audit["id"])
+    try:
+        result = service.verify_audit(ctx.store, audit["id"])
+    except (OSError, service.CaseError):
+        # Machine code only: the exception text can carry absolute paths.
+        result = {"ok": False, "reason": "read_error"}
     ok = bool(result.get("ok")) and result.get("db_matches") is not False
-    detail = {k: result.get(k) for k in ("missing", "added", "modified", "file_count", "manifest_sha256", "db_matches")}
+    detail = {k: result.get(k) for k in ("missing", "added", "modified", "file_count", "manifest_sha256", "db_matches",
+                                         "reason", "sealed")}
     check = ctx.cstore.save_seal_check(audit["id"], ok, detail, principal.username)
     ctx.cstore.log("seal_verify", user_id=principal.user_id, username=principal.username, ip=client_ip(request),
                    target=audit["id"], detail={"ok": ok})

@@ -32,10 +32,20 @@ def open_by_risk(findings: Iterable[Dict[str, Any]]) -> Dict[str, int]:
     return out
 
 
+def current_seal_check(cstore: ConsoleStore, audit: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """The cached check, unless it is an OK for a different seal than the audit has now (then: unverified).
+
+    A failed check always stands, whatever hash it recorded."""
+    check = cstore.get_seal_check(audit["id"]) or None
+    if check and check["ok"] and (check.get("detail") or {}).get("manifest_sha256") != audit.get("seal_sha256"):
+        return None
+    return check
+
+
 def audit_view(store: Store, cstore: ConsoleStore, audit: Dict[str, Any]) -> Dict[str, Any]:
     return {"id": audit["id"], "seq": ids.short_audit(audit["id"]), "kind": audit["kind"], "status": audit["status"],
             "folder": audit["folder"], "started_at": audit["started_at"], "sealed_at": audit.get("sealed_at"),
-            "seal_sha256": audit.get("seal_sha256"), "seal_check": cstore.get_seal_check(audit["id"]) or None,
+            "seal_sha256": audit.get("seal_sha256"), "seal_check": current_seal_check(cstore, audit),
             "reports": len(store.list_reports(audit["id"]))}
 
 

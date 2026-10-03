@@ -40,11 +40,17 @@ async function ensureSession() {
 async function logout() {
   try {
     await api("/auth/logout", { method: "POST" });
-  } finally {
-    state.user = null;
-    setCsrf(null);
-    window.location.hash = "#/login";
+  } catch (err) {
+    // 401: the session is already gone, so leaving is honest. Anything else: the cookie may still be valid.
+    if (err.status !== 401) {
+      document.getElementById("main").prepend(h("div", { class: "error", role: "alert" },
+        `No se pudo cerrar la sesión: ${err.message}. Sigues con la sesión abierta.`));
+      return;
+    }
   }
+  state.user = null;
+  setCsrf(null);
+  window.location.hash = "#/login";
 }
 
 function shell(navId) {

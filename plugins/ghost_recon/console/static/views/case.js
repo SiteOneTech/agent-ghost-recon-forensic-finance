@@ -25,19 +25,29 @@ function rerender() {
   window.dispatchEvent(new HashChangeEvent("hashchange"));
 }
 
+// The re-render below rebuilds the page, so verification errors are handed over to the next render().
+let verifyErrors = [];
+
 async function verifySeals(detail, button) {
   button.disabled = true;
   button.textContent = "Verificando…";
-  try {
-    for (const audit of detail.audits.filter((a) => a.status === "sealed")) {
+  verifyErrors = [];
+  for (const audit of detail.audits.filter((a) => a.status === "sealed")) {
+    try {
       await api(`/cases/${encodeURIComponent(detail.case.id)}/audits/${audit.seq}/verify`, { method: "POST" });
+    } catch (err) {
+      verifyErrors.push(`${audit.seq}: ${err.message}`);
     }
-    rerender();
-  } catch (err) {
-    button.disabled = false;
-    button.textContent = "Verificar sellos";
-    button.title = `Error: ${err.message}`;
   }
+  rerender();
+}
+
+function verifyNotice() {
+  const errors = verifyErrors;
+  verifyErrors = [];
+  return errors.length
+    ? h("div", { class: "error", role: "alert" }, `No se pudo verificar el sello (${errors.join("; ")}). El estado mostrado puede no estar al día.`)
+    : null;
 }
 
 function duplicates(stats) {
@@ -52,6 +62,7 @@ export async function render({ params, user }) {
   const tab = TABS.find((t) => t.id === tabId) || TABS[0];
   const verify = h("button", { class: "btn ghost", disabled: s.sealed_count === 0 }, "Verificar sellos");
   verify.addEventListener("click", () => verifySeals(detail, verify));
+  const notice = verifyNotice();
   const body = h("div", { class: "tab-body" }, h("p", { class: "muted" }, "Cargando…"));
   const page = h("div", { class: "page" },
     h("div", { class: "case-head" },
@@ -62,6 +73,7 @@ export async function render({ params, user }) {
         h("button", { class: "btn", disabled: true, title: "Disponible en H2" }, "▶ Review"),
         verify,
         h("button", { class: "btn ghost", disabled: true, title: "Disponible en H3" }, "Exportar resultados (.zip)"))),
+    notice,
     h("section", { class: "kpis" },
       kpi(s.audits_count, "Auditorías", sealChip(s.seal_state)),
       kpi(s.open_total, "Hallazgos abiertos", riskChips(s.open_by_risk)),

@@ -8,6 +8,17 @@ const CHECK_LABEL = {
   report_pdf: "informe PDF", workbook_xlsx: "workbook XLSX", validation: "validación", exceptions_export: "export de excepciones",
 };
 
+// One specific message per way a verification can fail; the counts only when files actually differ.
+function sealProblem(detail) {
+  const d = detail || {};
+  if (d.reason === "read_error") return "No se pudo leer la carpeta de la auditoría para verificar el sello.";
+  if (d.sealed === false) return "Falta el manifiesto SEALED.json o no es válido: no se puede comprobar el sello.";
+  if (d.db_matches === false) return "El hash del sello registrado en la base de datos no coincide con el manifiesto de la carpeta.";
+  const [modified, missing, added] = [d.modified, d.missing, d.added].map((l) => (l || []).length);
+  if (modified + missing + added > 0) return `Sello alterado: ${modified} modificados, ${missing} faltantes, ${added} añadidos.`;
+  return "La verificación del sello falló por una causa no identificada.";
+}
+
 async function auditDetail(caseId, audit, user) {
   const base = `/cases/${encodeURIComponent(caseId)}/audits/${audit.seq}`;
   const [d, reports] = await Promise.all([api(base), api(`${base}/reports`)]);
@@ -17,8 +28,7 @@ async function auditDetail(caseId, audit, user) {
     h("h3", {}, "Completitud"),
     h("div", { class: "checks" }, Object.entries(d.completion.checks).map(([k, ok]) =>
       chip(`${ok ? "✓" : "✗"} ${CHECK_LABEL[k] || k}`, ok ? "ok" : "risk-high"))),
-    broken ? h("p", { class: "error" }, `Sello alterado: ${(broken.modified || []).length} modificados, `
-      + `${(broken.missing || []).length} faltantes, ${(broken.added || []).length} añadidos.`) : null,
+    broken ? h("p", { class: "error" }, sealProblem(broken)) : null,
     h("h3", {}, "Entregables"),
     dataTable([
       { title: "Archivo", cell: (r) => (canDownload
