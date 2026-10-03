@@ -1,16 +1,37 @@
-"""Fixtures for the console tests (they build on tests/plugins/ghost_recon/conftest.py: gr_env, store, demo_case)."""
-import pytest
+"""Fixtures for the console tests (they build on tests/plugins/ghost_recon/conftest.py: gr_env, store)."""
+import shutil
 from pathlib import Path
 
+import pytest
+
 from plugins.ghost_recon.console.settings import ConsoleSettings
+
+REPO = Path(__file__).resolve().parents[4]
+DEMO = REPO / "ghost-recon" / "demo" / "demo-case"
 
 ADMIN = ("jean", "admin-pass-123")
 VIEWER = ("vera", "viewer-pass-123")
 
 
 @pytest.fixture
-def settings():
-    return ConsoleSettings()
+def case_root(gr_env):
+    """The configured case root of the console tests (spec §12 ``case_roots``)."""
+    root = gr_env / "Casos"
+    root.mkdir(exist_ok=True)
+    return root
+
+
+@pytest.fixture
+def demo_case(case_root):
+    """The demo case copied INSIDE the case root (overrides the plugin-level fixture) so jobs can target it."""
+    dest = case_root / "demo-case"
+    shutil.copytree(DEMO, dest)
+    return dest
+
+
+@pytest.fixture
+def settings(case_root):
+    return ConsoleSettings(case_roots=(str(case_root),))
 
 
 @pytest.fixture
