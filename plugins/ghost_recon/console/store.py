@@ -10,14 +10,21 @@ import json
 import sqlite3
 import threading
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 from ..core.db import connect, migrate as migrate_case_schema, utcnow
 
-CONSOLE_SCHEMA_VERSION = 1
+CONSOLE_SCHEMA_VERSION = 2
 ROLES = ("viewer", "admin")
-_JSON_COLS = ("detail", "ref")
+JOB_COMMANDS = ("new-open-case", "rerun-case", "review-case")
+JOB_STATUSES = ("queued", "running", "succeeded", "failed", "cancelled", "orphaned")
+ACTIVE_STATUSES = ("queued", "running")
+TERMINAL_STATUSES = ("succeeded", "failed", "cancelled", "orphaned")
+_JSON_COLS = ("detail", "ref", "args", "argv", "tokens")
 _USER_FIELDS = frozenset({"password_hash", "disabled", "last_login_at", "role"})
+_JOB_FIELDS = frozenset({"case_id", "context_file", "status", "pid", "pid_started", "runner_pid", "runner_started",
+                         "session_id", "exit_code", "started_at", "finished_at", "result_text", "tokens", "error",
+                         "phase", "notify_target"})
 
 CONSOLE_SCHEMA = [
     "CREATE TABLE IF NOT EXISTS console_schema_version (version INTEGER NOT NULL)",
@@ -71,12 +78,55 @@ CONSOLE_SCHEMA = [
     )""",
 ]
 
+# Version 1 is CONSOLE_SCHEMA above (H1; never edited). Each later version lists the statements that take a database
+# from the previous version to it; migrate_console applies the missing ones in order.
+CONSOLE_MIGRATIONS: Dict[int, List[str]] = {
+    2: [
+        """CREATE TABLE IF NOT EXISTS console_jobs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            command TEXT NOT NULL CHECK (command IN ('new-open-case', 'rerun-case', 'review-case')),
+            case_id TEXT,
+            folder TEXT NOT NULL,
+            args TEXT NOT NULL DEFAULT '{}',
+            argv TEXT NOT NULL DEFAULT '[]',
+            context_file TEXT,
+            status TEXT NOT NULL DEFAULT 'queued'
+                CHECK (status IN ('queued', 'running', 'succeeded', 'failed', 'cancelled', 'orphaned')),
+            pid INTEGER,
+            pid_started REAL,
+            runner_pid INTEGER,
+            runner_started REAL,
+            session_id TEXT,
+            exit_code INTEGER,
+            launched_by TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            started_at TEXT,
+            finished_at TEXT,
+            result_text TEXT,
+            tokens TEXT NOT NULL DEFAULT '{}',
+            error TEXT,
+            phase TEXT,
+            notify_target TEXT
+        )""",
+        "CREATE INDEX IF NOT EXISTS console_jobs_status ON console_jobs(status)",
+        "CREATE INDEX IF NOT EXISTS console_jobs_case ON console_jobs(case_id)",
+    ],
+}
+
 
 def migrate_console(conn: sqlite3.Connection) -> int:
+    """Idempotent and versioned: the v1 baseline, then every migration above the stored version, then the new
+    version in the one-row ``console_schema_version`` table."""
     for stmt in CONSOLE_SCHEMA:
         conn.execute(stmt)
-    if conn.execute("SELECT version FROM console_schema_version").fetchone() is None:
-        conn.execute("INSERT INTO console_schema_version(version) VALUES (?)", (CONSOLE_SCHEMA_VERSION,))
+    row = conn.execute("SELECT version FROM console_schema_version").fetchone()
+    if row is None:
+        conn.execute("INSERT INTO console_schema_version(version) VALUES (1)")
+    current = int(row[0]) if row is not None else 1
+    for version in sorted(v for v in CONSOLE_MIGRATIONS if v > current):
+        for stmt in CONSOLE_MIGRATIONS[version]:
+            conn.execute(stmt)
+        conn.execute("UPDATE console_schema_version SET version=?", (version,))
     conn.commit()
     return CONSOLE_SCHEMA_VERSION
 
@@ -241,3 +291,50 @@ class ConsoleStore:
         return self._all("SELECT t.id, t.case_id, t.audit_id, t.ts, t.event_type, t.actor, t.description,"
                          " c.name AS case_name FROM timeline t JOIN cases c ON c.id = t.case_id"
                          " ORDER BY t.ts DESC, t.id DESC LIMIT ?", (int(limit),))
+
+    # ---------------------------------------------------------------- jobs
+    def create_job(self, *, command: str, folder: str, args: Dict[str, Any], argv: List[str], launched_by: str,
+                   context_file: Optional[str] = None, case_id: Optional[str] = None) -> Dict[str, Any]:
+        if command not in JOB_COMMANDS:
+            raise ValueError(f"orden desconocida: {command}")
+        job_id = self._insert(
+            "INSERT INTO console_jobs(command, case_id, folder, args, argv, context_file, status, launched_by,"
+            " created_at) VALUES (?,?,?,?,?,?,'queued',?,?)",
+            (command, case_id, folder, _j(args), _j([str(a) for a in argv]), context_file, launched_by, utcnow()))
+        return self.get_job(job_id)
+
+    def get_job(self, job_id: int) -> Dict[str, Any]:
+        return self._one("SELECT * FROM console_jobs WHERE id=?", (int(job_id),))
+
+    def list_jobs(self, *, statuses: Iterable[str] = (), case_id: str = "", folder: str = "", limit: int = 200,
+                  oldest_first: bool = False) -> List[Dict[str, Any]]:
+        """Newest first (oldest first for the dispatcher). ``case_id`` and ``folder`` together match either: a
+        case's jobs include the ones launched on its folder before the case existed."""
+        where: List[str] = []
+        args: List[Any] = []
+        statuses = tuple(statuses)
+        if statuses:
+            where.append(f"status IN ({','.join('?' * len(statuses))})")
+            args += statuses
+        scope = [(col, value) for col, value in (("case_id", case_id), ("folder", folder)) if value]
+        if scope:
+            where.append("(" + " OR ".join(f"{col}=?" for col, _ in scope) + ")")
+            args += [value for _, value in scope]
+        sql = "SELECT * FROM console_jobs" + (f" WHERE {' AND '.join(where)}" if where else "")
+        sql += f" ORDER BY id {'ASC' if oldest_first else 'DESC'} LIMIT ?"
+        return self._all(sql, (*args, int(limit)))
+
+    def update_job(self, job_id: int, *, expect: Iterable[str] = (), **fields: Any) -> bool:
+        """Update a job; with ``expect``, only while its status is one of those, so a cancel or an orphan verdict
+        always wins over a late writer. True when the row matched."""
+        unknown = set(fields) - _JOB_FIELDS
+        if unknown or not fields:
+            raise ValueError(f"campos no editables: {sorted(unknown) or 'ninguno'}")
+        if "status" in fields and fields["status"] not in JOB_STATUSES:
+            raise ValueError(f"estado inválido: {fields['status']}")
+        expect = tuple(expect)
+        values = [_j(v) if k == "tokens" else v for k, v in fields.items()]
+        sql = f"UPDATE console_jobs SET {', '.join(f'{k}=?' for k in fields)} WHERE id=?"
+        if expect:
+            sql += f" AND status IN ({','.join('?' * len(expect))})"
+        return self._update(sql, (*values, int(job_id), *expect)) > 0
