@@ -57,6 +57,18 @@ def db_path() -> Path:
         return Path.home() / ".ghostrecon" / DB_FILENAME
 
 
+def open_connection():
+    """New connection to the profile's Ghost Recon DB: Hermes' ``plugin_db`` inside Hermes (WAL with its
+    network-filesystem fallbacks), ``GHOSTRECON_DB`` / the fallback path outside Hermes (tests, standalone)."""
+    if not os.environ.get("GHOSTRECON_DB"):
+        try:
+            from plugins.plugin_storage import plugin_db
+            return plugin_db(PLUGIN_NAME, DB_FILENAME)
+        except Exception:  # outside Hermes: plugin storage unavailable, use the plain file
+            pass
+    return connect(db_path())
+
+
 def store() -> Store:
     """Process-wide Store keyed by DB path (profiles switch the path, so key by it)."""
     path = db_path()
@@ -64,16 +76,7 @@ def store() -> Store:
     with _lock:
         st = _stores.get(key)
         if st is None:
-            conn = None
-            if not os.environ.get("GHOSTRECON_DB"):
-                try:
-                    from plugins.plugin_storage import plugin_db
-                    conn = plugin_db(PLUGIN_NAME, DB_FILENAME)
-                except Exception:
-                    conn = None
-            if conn is None:
-                conn = connect(path)
-            st = Store(conn)
+            st = Store(open_connection())
             _stores[key] = st
         return st
 
