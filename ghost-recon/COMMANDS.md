@@ -48,6 +48,24 @@ hermes ghostrecon export <id|folder> --out <file.json>
 hermes ghostrecon import <case.json>         re-importa un caso desde su espejo
 ```
 
+## 3b. Consola web (sin agente en H1)
+
+```
+hermes ghostrecon serve [--host 127.0.0.1] [--port 9230] [--allow-remote]
+hermes ghostrecon user add <nombre> --role admin|viewer [--password-stdin]
+hermes ghostrecon user list | passwd <nombre> | disable <nombre> | enable <nombre>
+hermes ghostrecon token create --user <nombre> --name <etiqueta>     (Bearer; se muestra una sola vez)
+hermes ghostrecon token list | token revoke <id>
+```
+
+- Escucha en `127.0.0.1:9230`. Desde otra PC se entra por túnel: `ssh -L 9230:127.0.0.1:9230 usuario@maquina` y luego `http://localhost:9230`.
+- `serve` no arranca sin un admin activo. Fuera de loopback exige `--allow-remote` y un proxy TLS delante.
+- Roles: `viewer` lee y descarga entregables de auditorías selladas; `admin` además descarga los de auditorías abiertas y ve el registro de la consola.
+- API: `/api/v1/…`; el esquema está en `/api/v1/openapi.json`, tras el login.
+- Configuración: `plugins.entries.ghost-recon.settings.console` en `config.yaml` (`host`, `port`, `session_idle_hours`, `session_max_days`, `allowed_hosts`).
+- Demo local sin LLM: `python ghost-recon/demo/console_demo.py`.
+- Diseño completo y próximos hitos (lanzar órdenes, exportar ZIP, búsqueda, avisos): `ghost-recon/specs/2026-10-02-ghost-recon-console-design.md`.
+
 ## 4. Herramientas del agente (toolset `ghost_recon`)
 
 Todas devuelven JSON. Errores: `{"error": "…"}`.

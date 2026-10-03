@@ -82,6 +82,9 @@ plugins/ghost_recon/console/
 ├── settings.py       lectura de plugins.entries.ghost-recon.settings.console.* con defaults
 ├── store.py          ConsoleStore: tablas console_* (esquema + migrate) sobre la misma ghostrecon.db
 ├── auth.py           hash scrypt, sesiones, tokens, dependencia current_principal(role)
+├── deps.py             dependencias FastAPI: contexto, principal, roles, ApiError
+├── readmodel.py        lecturas puras para la API (resúmenes de caso, filtros, paginación)
+├── paths.py            raíz de resultados de un caso y contención de rutas
 ├── fsjail.py         resolución de rutas dentro de case_roots, listado, búsqueda, inspección previa
 ├── commands.py       construcción y validación de órdenes (tabla orden → skill/args), contexto combinado
 ├── jobs.py           JobService: crear, encolar, lanzar, cancelar, huérfanos, límites
@@ -131,9 +134,12 @@ console_jobs       id PK (int), command (new-open-case|rerun-case|review-case), 
                    status (queued|running|succeeded|failed|cancelled|orphaned), pid, runner_pid,
                    session_id, exit_code, launched_by, created_at, started_at, finished_at,
                    result_text, tokens JSON, error, phase (última fase deducida), notify_target
+console_seal_checks  audit_id PK, ok (0/1), checked_at, checked_by, detail JSON
 ```
 
 Sesiones y tokens se guardan solo como SHA-256. El token en claro se muestra una única vez.
+
+caché de la última verificación de sello por auditoría.
 
 ## 6. Motor de ejecuciones
 
@@ -234,7 +240,7 @@ Fuente: <ruta>/context.md · SHA-256 <hash>      (o "sin context.md en la carpet
 
 Convenciones:
 - JSON; errores `{"error": {"code", "message"}}`; listas `{"items", "next_cursor"}`; fechas ISO-8601 UTC.
-- OpenAPI en `/api/docs`, tras el login.
+- OpenAPI en `/api/v1/openapi.json`, tras el login (sin Swagger UI: cargaría recursos externos, contra la CSP);
 - La ruta de auditoría usa el ID de caso y la secuencia corta: `/cases/{case_id}/audits/{seq}` con `seq ∈ A01…, R01…`. El ID completo `<case>/A01` lleva `/`.
 
 | Grupo | Método y ruta | Rol |
@@ -248,7 +254,7 @@ Convenciones:
 | Exportación | `POST /cases/{id}/export` (`{scope: case\|audit, seq?, include_unsealed?}`) → 202 + `export_id`, `GET /exports/{eid}` (estado, tamaño, sha256), `GET /exports/{eid}/download`; `GET /cases/{id}/{table}.csv\|.xlsx?<filtros>` para `table ∈ {findings, evidence, timeline, criteria}` | viewer (exportar con `include_unsealed=true`: **admin**) |
 | Búsqueda | `GET /search?q=&types=case,finding,evidence,criteria&limit=` | viewer |
 
-- `POST /cases/{id}/audits/{seq}/verify` recalcula los hashes del sello y cachea el resultado con su fecha en `console_audit_log.detail`. La vista muestra "verificado hace X".
+- `POST /cases/{id}/audits/{seq}/verify` recalcula los hashes del sello y cachea el resultado con su fecha en `console_seal_checks` (y la acción queda en `console_audit_log`). La vista muestra "verificado hace X".
 - Lecturas: la consola abre la BD con `busy_timeout` (≥ 5 s) y solo escribe tablas `console_*`. SQLite en WAL permite leer mientras los agentes escriben.
 
 ## 9. Seguridad

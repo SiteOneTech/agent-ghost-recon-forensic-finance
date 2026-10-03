@@ -26,6 +26,9 @@ genérica de plugins (ver `plugins/AGENTS.md`), nunca se cablea lógica Ghost Re
 - Skills bundled: cumplir HARDLINE de `skills/AGENTS.md` (descripción ≤ 60 chars con punto final,
   secciones `When to Use / Prerequisites / How to Run / Quick Reference / Procedure / Pitfalls /
   Verification`, herramientas nativas en backticks). El texto largo va en `references/`.
+- La consola (`plugins/ghost_recon/console/`) **solo escribe tablas `console_*`**; los datos de caso se leen por `core`
+  (`Store`, `service`). Todo path que llega del navegador pasa por `console/paths.resolve_within`. En el frontend,
+  nada de `innerHTML` con datos: siempre `h()` (`static/lib/dom.js`).
 
 ## Pruebas
 
@@ -46,3 +49,7 @@ python ghost-recon/demo/smoke_test.py                          # ciclo completo 
 | añadir un rol a `/review-case` | `core/review.py` (`ROLES`) + nueva skill `skills/ghost-recon/ghost-recon-role-<rol>/` |
 | cambiar la portada/hojas del pack | `core/reports/pdf.py`, `xlsx.py` |
 | cambiar el texto de identidad del agente | `plugins/ghost_recon/prompts.py` (`SYSTEM_SECTION`), `ghost-recon/config/SOUL.md` |
+| añadir un endpoint a la consola | `console/routers/<recurso>.py` + `console/readmodel.py` (lógica pura) + `ROUTERS` en `console/app.py` |
+| cambiar login, roles o sesiones de la consola | `console/auth.py`, `console/deps.py` (`require`, CSRF) |
+| cambiar una pantalla de la consola | `console/static/views/*.js` (pestañas del caso en `views/case/`) y `static/app.css` |
+| cambiar colores/logo de la consola | `console/static/theme.css` (variables) |
