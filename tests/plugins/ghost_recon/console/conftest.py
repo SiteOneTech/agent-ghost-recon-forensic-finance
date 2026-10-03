@@ -30,3 +30,37 @@ def users(auth):
     auth.add_user(ADMIN[0], ADMIN[1], "admin")
     auth.add_user(VIEWER[0], VIEWER[1], "viewer")
     return {"admin": ADMIN, "viewer": VIEWER}
+
+
+@pytest.fixture
+def app(store, cstore, settings, auth):
+    from plugins.ghost_recon.console.app import create_app
+    return create_app(settings, store, cstore, auth=auth)
+
+
+@pytest.fixture
+def client(app):
+    from fastapi.testclient import TestClient
+    with TestClient(app, base_url="http://localhost") as c:
+        yield c
+
+
+@pytest.fixture
+def login_as(app, users):
+    """Factory: a logged-in TestClient for 'admin' or 'viewer', with its CSRF header preset."""
+    from fastapi.testclient import TestClient
+    opened = []
+
+    def _login(role: str):
+        c = TestClient(app, base_url="http://localhost")
+        c.__enter__()
+        opened.append(c)
+        username, password = users[role]
+        r = c.post("/api/v1/auth/login", json={"username": username, "password": password})
+        assert r.status_code == 200, r.text
+        c.headers["X-GR-CSRF"] = r.json()["csrf"]
+        return c
+
+    yield _login
+    for c in opened:
+        c.__exit__(None, None, None)
