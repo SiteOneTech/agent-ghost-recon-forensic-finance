@@ -87,3 +87,29 @@ def test_buildable_pyproject_member_keeps_its_declared_name(tmp_path):
     member = _workspace_member(plugin, root, identity=plugin)
     assert (member / "pyproject.toml").read_text(encoding="utf-8") == (
         plugin / "pyproject.toml").read_text(encoding="utf-8")
+
+
+def _flat_plugin(parent, dirname: str, name: str):
+    plugin = parent / dirname
+    plugin.mkdir(parents=True)
+    (plugin / "plugin.yaml").write_text(f"name: {name}\npython_dependencies: [left-pad-py]\n", encoding="utf-8")
+    return plugin
+
+
+def test_flat_plugin_is_found_by_manifest_name_when_its_directory_differs(tmp_path, monkeypatch):
+    """A flat plugin's selection key is its manifest name (``hermes_cli.plugins_manifest``), but
+    its directory can differ — ``ghost-recon`` ships as the package ``plugins/ghost_recon``. PM
+    looked only for ``plugins/<key>``, dropped the plugin, and its python_dependencies never
+    reached the venv. Bundled and user plugins resolve the same way; the user copy wins."""
+    from pm import paths
+
+    home, repo = tmp_path / "home", tmp_path / "repo"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(paths, "repo_root", lambda: repo)
+    home.mkdir()
+    bundled = _flat_plugin(repo / "plugins", "ghost_recon", "ghost-recon")
+    (home / "config.yaml").write_text("plugins:\n  enabled: [ghost-recon]\n", encoding="utf-8")
+    assert enabled_member_dirs() == [bundled]
+
+    user = _flat_plugin(home / "plugins", "ghost-recon-fork", "ghost-recon")
+    assert enabled_member_dirs() == [user]

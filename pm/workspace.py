@@ -194,10 +194,40 @@ def enabled_plugin_entries(*, proposed_home=None, enabled=None, disabled=None,
             plugin_dir = plugins_dir / relative
             proposed = installing is not None and plugin_dir.resolve() == installing.resolve()
             if not proposed and not _is_directory(plugin_dir):
-                plugin_dir = paths.repo_root() / "plugins" / relative
+                plugin_dir = (_plugin_dir_named(plugins_dir, relative)
+                              or _plugin_dir_named(paths.repo_root() / "plugins", relative)
+                              or paths.repo_root() / "plugins" / relative)
             if proposed or _is_directory(plugin_dir):
                 entries.append((plugins_dir, name, plugin_dir))
     return entries
+
+
+def _plugin_dir_named(plugins_dir: Path, key: Path) -> Path | None:
+    """The directory under *plugins_dir* that *key* selects, or ``None``.
+
+    A nested key is the plugin's path; a flat key is its manifest name, which may differ from
+    the directory (``ghost-recon`` ships as the package ``plugins/ghost_recon``). Same rule as
+    ``hermes_cli.plugins_manifest.parse_manifest_file``; an unreadable manifest is skipped, as
+    the application's discovery skips it.
+    """
+    from pm.plugin_declarations import native_manifest_file, read_native_manifest
+    from pm.plugins_state import _is_directory
+
+    direct = plugins_dir / key
+    if _is_directory(direct):
+        return direct
+    if len(key.parts) != 1 or not _is_directory(plugins_dir):
+        return None
+    for child in sorted(plugins_dir.iterdir()):
+        manifest = native_manifest_file(child) if _is_directory(child) else None
+        if manifest is None:
+            continue
+        try:
+            if read_native_manifest(manifest).get("name") == key.name:
+                return child
+        except ValueError:
+            continue
+    return None
 
 
 def enabled_plugin_dirs(*, proposed_home=None, enabled=None, disabled=None,
