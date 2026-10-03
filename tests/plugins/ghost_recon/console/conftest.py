@@ -17,3 +17,16 @@ def cstore(store):
     """Console store on its own connection to the same temp DB as ``store`` (case tables already migrated)."""
     from plugins.ghost_recon.console.store import ConsoleStore
     return ConsoleStore.open_default()
+
+
+@pytest.fixture
+def auth(cstore, settings):
+    from plugins.ghost_recon.console.auth import AuthService
+    return AuthService(cstore, settings)
+
+
+@pytest.fixture
+def users(auth):
+    auth.add_user(ADMIN[0], ADMIN[1], "admin")
+    auth.add_user(VIEWER[0], VIEWER[1], "viewer")
+    return {"admin": ADMIN, "viewer": VIEWER}

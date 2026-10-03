@@ -1,0 +1,120 @@
+"""AuthService contracts: password hashing, account rules, session expiry, lockout, API tokens."""
+from datetime import datetime, timedelta, timezone
+
+import pytest
+
+from plugins.ghost_recon.console.auth import AuthError, AuthService, LoginLocked, hash_password, verify_password
+from plugins.ghost_recon.console.settings import ConsoleSettings
+
+
+class Clock:
+    def __init__(self):
+        self.now = datetime(2026, 10, 2, 12, 0, tzinfo=timezone.utc)
+
+    def __call__(self):
+        return self.now
+
+    def advance(self, **kw):
+        self.now += timedelta(**kw)
+
+
+@pytest.fixture
+def clock():
+    return Clock()
+
+
+@pytest.fixture
+def svc(cstore, clock):
+    s = AuthService(cstore, ConsoleSettings(session_idle_hours=12, session_max_days=7), clock=clock)
+    s.add_user("jean", "admin-pass-123", "admin")
+    return s
+
+
+def test_password_hash_roundtrip_and_rejections():
+    encoded = hash_password("correct horse 1")
+    assert verify_password("correct horse 1", encoded)
+    assert not verify_password("correct horse 2", encoded)
+    assert not verify_password("x", "not-a-hash")
+    assert hash_password("same-pass-1") != hash_password("same-pass-1")  # salted
+
+
+@pytest.mark.parametrize("username,password", [("a b", "long-enough-1"), ("x", "long-enough-1"), ("ok-user", "short")])
+def test_add_user_validates_username_and_password(svc, username, password):
+    with pytest.raises(ValueError):
+        svc.add_user(username, password, "viewer")
+
+
+def test_usernames_are_case_insensitive_and_unique(svc):
+    with pytest.raises(ValueError):
+        svc.add_user("JEAN", "other-pass-123", "viewer")
+
+
+def test_session_expires_after_idle_window_and_absolute_limit(svc, clock):
+    raw, _ = svc.login("jean", "admin-pass-123")
+    clock.advance(hours=11)
+    assert svc.resolve_session(raw) is not None  # activity refreshes last_seen
+    clock.advance(hours=11)
+    assert svc.resolve_session(raw) is not None
+    clock.advance(hours=13)
+    assert svc.resolve_session(raw) is None  # idle longer than 12 h
+    raw2, _ = svc.login("jean", "admin-pass-123")
+    for _ in range(15):  # stays active every 12 h, but runs past the 7-day absolute cap
+        clock.advance(hours=12)
+        svc.resolve_session(raw2)
+    assert svc.resolve_session(raw2) is None
+
+
+def test_lockout_after_five_failures_blocks_even_the_right_password(svc, clock):
+    for _ in range(5):
+        with pytest.raises(AuthError):
+            svc.login("jean", "wrong-password", ip="10.0.0.9")
+    with pytest.raises(LoginLocked) as locked:
+        svc.login("jean", "admin-pass-123", ip="10.0.0.9")
+    assert locked.value.retry_after > 0
+    clock.advance(minutes=6)
+    raw, principal = svc.login("jean", "admin-pass-123", ip="10.0.0.9")
+    assert raw and principal.username == "jean"
+
+
+def test_failures_outside_the_window_do_not_lock(svc, clock):
+    for _ in range(4):
+        with pytest.raises(AuthError):
+            svc.login("jean", "wrong-password")
+    clock.advance(minutes=16)
+    with pytest.raises(AuthError):
+        svc.login("jean", "wrong-password")
+    svc.login("jean", "admin-pass-123")  # only one failure inside the window: not locked
+
+
+def test_password_change_and_disable_revoke_sessions(svc):
+    svc.add_user("vera", "viewer-pass-123", "viewer")
+    raw, _ = svc.login("vera", "viewer-pass-123")
+    svc.set_password("vera", "viewer-pass-456")
+    assert svc.resolve_session(raw) is None
+    raw, _ = svc.login("vera", "viewer-pass-456")
+    svc.set_disabled("vera", True)
+    assert svc.resolve_session(raw) is None
+    with pytest.raises(AuthError):
+        svc.login("vera", "viewer-pass-456")
+
+
+def test_last_active_admin_cannot_be_disabled(svc):
+    with pytest.raises(ValueError):
+        svc.set_disabled("jean", True)
+
+
+def test_api_token_resolves_until_revoked(svc):
+    raw, info = svc.create_api_token("jean", "webapp")
+    principal = svc.resolve_bearer(raw)
+    assert principal is not None and principal.username == "jean" and principal.via == "token"
+    assert principal.csrf is None
+    assert svc.revoke_api_token(info["id"])
+    assert svc.resolve_bearer(raw) is None
+
+
+def test_raw_session_and_api_tokens_never_reach_the_db(svc, cstore):
+    raw_session, _ = svc.login("jean", "admin-pass-123", ip="127.0.0.1")
+    raw_token, _ = svc.create_api_token("jean", "webapp")
+    dump = "\n".join(str(v) for table in ("console_sessions", "console_tokens", "console_audit_log")
+                     for row in cstore.conn.execute(f"SELECT * FROM {table}") for v in tuple(row))
+    assert raw_session not in dump and raw_token not in dump
