@@ -1,5 +1,6 @@
 """Fixtures for the console tests (they build on tests/plugins/ghost_recon/conftest.py: gr_env, store, demo_case)."""
 import pytest
+from pathlib import Path
 
 from plugins.ghost_recon.console.settings import ConsoleSettings
 
@@ -64,3 +65,39 @@ def login_as(app, users):
     yield _login
     for c in opened:
         c.__exit__(None, None, None)
+
+
+def _seal_with_md_pack(store, audit_id, folder: Path, report_md: str) -> None:
+    """Seal an audit with an md-only pack (forced: pdf/xlsx need the plugin's optional deps)."""
+    from plugins.ghost_recon.core import casefolder as cf, service
+    from plugins.ghost_recon.core.reports import pack
+    cf.write_json(folder, "03_Extracted_Data/model.json", {"kpis": {"total": 1}})
+    cf.write_text(folder, "06_Report/report.md", report_md)
+    pack.build_pack(store, audit_id, formats=["md"])
+    service.record_run(store, audit_id, "validation", role="A", status="done", summary="ok")
+    assert service.seal_audit(store, audit_id, force=True)["sealed"]
+
+
+@pytest.fixture
+def seeded(store, demo_case):
+    """Demo case: A01 sealed (3 findings, 1 criterion, md pack) and A02 open (rerun) with an md report."""
+    from plugins.ghost_recon.core import casefolder as cf, service
+    from plugins.ghost_recon.core.reports import pack
+    case_id = service.open_case(store, str(demo_case), name="Acme Demo")["case"]["id"]
+    a1 = service.start_audit(store, case_id, "initial")
+    a1_id = a1["audit"]["id"]
+    service.upsert_findings(store, a1_id, [
+        {"kind": "exception", "title": "Pagos Zelle sin factura", "amount": 12450.0, "risk": "high",
+         "counterparty": "Socio B"},
+        {"kind": "anomaly", "title": "Factura posterior al pago", "amount": 3200.0, "risk": "medium"},
+        {"kind": "question", "title": "¿Quién autorizó el acta?", "risk": "low", "status": "closed"},
+    ])
+    service.add_criterion(store, a1_id, "Gerencia", "Periodo ene–jun 2026")
+    _seal_with_md_pack(store, a1_id, Path(a1["folder"]), "## 1. Respuesta\n\nTexto.\n")
+    (demo_case / "Bancos" / "nuevo.txt").write_text("nuevo", encoding="utf-8")
+    a2 = service.start_audit(store, case_id, "rerun")
+    a2_folder = Path(a2["folder"])
+    cf.write_text(a2_folder, "06_Report/report.md", "## 1. Respuesta\n\nBorrador.\n")
+    pack.build_pack(store, a2["audit"]["id"], formats=["md"])
+    return {"case_id": case_id, "a1": a1_id, "a2": a2["audit"]["id"], "a1_folder": Path(a1["folder"]),
+            "a2_folder": a2_folder, "root": demo_case}
