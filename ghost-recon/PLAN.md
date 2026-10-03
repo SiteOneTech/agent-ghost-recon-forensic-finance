@@ -155,7 +155,13 @@ Leyenda: `[ ]` pendiente · `[~]` en curso · `[x]` hecho · `[!]` bloqueado (ve
 ### Fase 8 — Consola web (spec `ghost-recon/specs/2026-10-02-ghost-recon-console-design.md`)
 - [x] H1 · Base: `hermes ghostrecon serve|user|token`, login/roles/tokens, API de lectura, verificación de sellos cacheada, descargas contenidas, frontend (Inicio, Casos, Caso con 7 pestañas, Sistema), demo `console_demo.py`
 - [ ] H2 · Ejecuciones: navegador de carpetas, asistente Nueva auditoría con notas de contexto, motor de jobs desacoplado, vista en vivo, Re-run/Review
-- [ ] H3 · Exportación `.zip` verificable, tablas CSV/XLSX, búsqueda entre casos, avisos
+  - Pendientes de la revisión final de H1 (antes de tocar el esquema):
+    - migraciones versionadas de `console_*` con tabla de versión de una fila
+    - lock en la contabilidad del bloqueo de login
+    - `touch_session` best-effort y cabeceras de seguridad en los 500
+    - prueba E2E real con `HERMES_HOME` temporal + `config.yaml`
+    - purga de sesiones vencidas
+- [ ] H3 · Exportación `.zip` verificable, tablas CSV/XLSX, búsqueda entre casos, avisos, verificación de hash al descargar entregables de auditorías selladas (409 `hash_mismatch`, registro de descargas denegadas)
 - [ ] H4 · Instaladores `--console`/servicio, `CONSOLE.md`, aceptación en la máquina dedicada
 
 ---
