@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, Request, Response
 from pydantic import BaseModel, Field
 
 from ..auth import AuthError, LoginLocked, Principal
-from ..deps import SESSION_COOKIE, ApiError, ConsoleContext, client_ip, current_principal, get_ctx
+from ..deps import ApiError, ConsoleContext, client_ip, current_principal, get_ctx, session_cookie_name
 
 router = APIRouter(tags=["auth"])
 
@@ -29,7 +29,7 @@ def login(body: LoginBody, request: Request, response: Response, ctx: ConsoleCon
         raise ApiError(429, "locked", str(exc), headers={"Retry-After": str(exc.retry_after)})
     except AuthError as exc:
         raise ApiError(401, "bad_credentials", str(exc))
-    response.set_cookie(SESSION_COOKIE, raw, httponly=True, samesite="strict", path="/",
+    response.set_cookie(session_cookie_name(ctx.settings), raw, httponly=True, samesite="strict", path="/",
                         secure=request.url.scheme == "https", max_age=ctx.settings.session_max_days * 86400)
     return {"user": _user(principal), "csrf": principal.csrf}
 
@@ -38,7 +38,7 @@ def login(body: LoginBody, request: Request, response: Response, ctx: ConsoleCon
 def logout(request: Request, response: Response, principal: Principal = Depends(current_principal),
            ctx: ConsoleContext = Depends(get_ctx)):
     ctx.auth.logout(principal, ip=client_ip(request))
-    response.delete_cookie(SESSION_COOKIE, path="/")
+    response.delete_cookie(session_cookie_name(ctx.settings), path="/")
     return {"ok": True}
 
 

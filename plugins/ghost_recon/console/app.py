@@ -62,8 +62,11 @@ def create_app(settings: ConsoleSettings, store: Store, cstore: ConsoleStore, *,
             response = JSONResponse({"error": {"code": "bad_host", "message": "host no permitido"}}, status_code=400)
         for key, value in SECURITY_HEADERS.items():
             response.headers.setdefault(key, value)
-        if request.url.path.startswith("/api/"):
+        path = request.url.path
+        if path.startswith("/api/"):
             response.headers["Cache-Control"] = "no-store"
+        elif path == "/" or path.startswith("/static/"):
+            response.headers["Cache-Control"] = "no-cache"  # revalidate: no mixed old/new ES modules after an upgrade
         return response
 
     @app.exception_handler(StarletteHTTPException)
@@ -74,8 +77,10 @@ def create_app(settings: ConsoleSettings, store: Store, cstore: ConsoleStore, *,
 
     @app.exception_handler(RequestValidationError)
     async def validation_error(request: Request, exc: RequestValidationError):
+        # Only where/what/kind: the default entries also carry the submitted input (a password on a bad login).
+        fields = [{k: e.get(k) for k in ("loc", "msg", "type")} for e in jsonable_encoder(exc.errors())]
         return JSONResponse({"error": {"code": "invalid_request", "message": "parámetros inválidos",
-                                       "fields": jsonable_encoder(exc.errors())}}, status_code=422)
+                                       "fields": fields}}, status_code=422)
 
     for module in ROUTERS:
         app.include_router(module.router, prefix="/api/v1")

@@ -8,7 +8,7 @@ def test_api_requires_authentication(client):
 
 
 def test_forged_or_foreign_session_cookie_is_a_clean_401(client):
-    client.cookies.set("gr_session", "forged-or-from-another-console")
+    client.cookies.set("gr_session_9230", "forged-or-from-another-console")
     r = client.get("/api/v1/auth/me")
     assert r.status_code == 401 and r.json()["error"]["code"] == "unauthenticated"
 
@@ -34,11 +34,17 @@ def test_security_headers_on_page_and_api(client):
     assert "default-src 'self'" in api.headers["content-security-policy"]
 
 
+def test_pages_and_static_revalidate_while_api_is_never_stored(client):
+    assert client.get("/").headers["cache-control"] == "no-cache"
+    assert client.get("/static/app.js").headers["cache-control"] == "no-cache"
+    assert client.get("/api/v1/auth/me").headers["cache-control"] == "no-store"
+
+
 def test_login_sets_an_httponly_strict_cookie_and_returns_csrf(client, users):
     r = client.post("/api/v1/auth/login", json={"username": "jean", "password": users["admin"][1]})
     assert r.status_code == 200 and r.json()["csrf"] and r.json()["user"]["role"] == "admin"
     cookie = r.headers["set-cookie"].lower()
-    assert "gr_session=" in cookie and "httponly" in cookie and "samesite=strict" in cookie
+    assert "gr_session_9230=" in cookie and "httponly" in cookie and "samesite=strict" in cookie
 
 
 def test_bad_credentials_are_401_then_lockout_is_429(client, users):
@@ -67,3 +73,30 @@ def test_openapi_schema_is_behind_login(client, users):
 def test_invalid_login_body_is_a_422_envelope(client):
     r = client.post("/api/v1/auth/login", json={"username": ""})
     assert r.status_code == 422 and r.json()["error"]["code"] == "invalid_request"
+
+
+def test_422_never_echoes_the_submitted_password(client):
+    secret = "MY-SECRET-PASSWORD"
+    for body in ({"password": secret}, {"username": "jean", "password": secret * 20}):
+        r = client.post("/api/v1/auth/login", json=body)
+        assert r.status_code == 422
+        assert secret not in r.text
+        assert all(set(f) == {"loc", "msg", "type"} for f in r.json()["error"]["fields"])
+
+
+def test_two_consoles_on_one_host_keep_separate_sessions(store, cstore, users):
+    from dataclasses import replace
+    from plugins.ghost_recon.console.app import create_app
+    from plugins.ghost_recon.console.auth import AuthService
+    from plugins.ghost_recon.console.settings import ConsoleSettings
+    apps = {}
+    for port in (9230, 9231):
+        settings = replace(ConsoleSettings(), port=port)
+        apps[port] = create_app(settings, store, cstore, auth=AuthService(cstore, settings))
+    # One jar for both: browsers do not separate cookies by port.
+    with TestClient(apps[9230], base_url="http://localhost") as a, TestClient(apps[9231], base_url="http://localhost") as b:
+        assert a.post("/api/v1/auth/login", json={"username": "jean", "password": users["admin"][1]}).status_code == 200
+        b.cookies.jar = a.cookies.jar  # same cookie jar object
+        assert b.post("/api/v1/auth/login", json={"username": "vera", "password": users["viewer"][1]}).status_code == 200
+        assert a.get("/api/v1/auth/me").json()["user"]["username"] == "jean"
+        assert b.get("/api/v1/auth/me").json()["user"]["username"] == "vera"

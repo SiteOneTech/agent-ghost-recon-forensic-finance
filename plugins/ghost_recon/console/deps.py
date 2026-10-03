@@ -12,7 +12,6 @@ from .auth import AuthService, Principal
 from .settings import ConsoleSettings
 from .store import ConsoleStore
 
-SESSION_COOKIE = "gr_session"
 CSRF_HEADER = "x-gr-csrf"
 SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
@@ -40,6 +39,11 @@ def client_ip(request: Request) -> str:
     return request.client.host if request.client else ""
 
 
+def session_cookie_name(settings: ConsoleSettings) -> str:
+    """Per-console cookie name: browsers share host-only cookies across ports, so each console needs its own."""
+    return f"gr_session_{settings.port}"
+
+
 def _same(sent: str, expected: str) -> bool:
     return hmac.compare_digest(sent.encode("utf-8"), expected.encode("utf-8"))
 
@@ -52,7 +56,7 @@ def current_principal(request: Request, ctx: ConsoleContext = Depends(get_ctx)) 
         if principal is None:
             raise ApiError(401, "invalid_token", "token inválido o revocado")
         return principal
-    principal = ctx.auth.resolve_session(request.cookies.get(SESSION_COOKIE, ""))
+    principal = ctx.auth.resolve_session(request.cookies.get(session_cookie_name(ctx.settings), ""))
     if principal is None:
         raise ApiError(401, "unauthenticated", "inicia sesión")
     if request.method not in SAFE_METHODS and not _same(request.headers.get(CSRF_HEADER, ""), principal.csrf or ""):
