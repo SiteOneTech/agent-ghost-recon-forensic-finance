@@ -48,6 +48,27 @@ hermes ghostrecon export <id|folder> --out <file.json>
 hermes ghostrecon import <case.json>         re-importa un caso desde su espejo
 ```
 
+## 3b. Consola web (sin agente en H1)
+
+```
+hermes ghostrecon serve [--host 127.0.0.1] [--port 9230] [--allow-remote]
+hermes ghostrecon user add <nombre> [--role admin|viewer] [--password-stdin]
+hermes ghostrecon user list | passwd <nombre> [--password-stdin] | disable <nombre> | enable <nombre>
+hermes ghostrecon token create --user <nombre> --name <etiqueta>     (Bearer; se muestra una sola vez)
+hermes ghostrecon token list | token revoke <id>
+```
+
+- Escucha en `127.0.0.1:9230`. Desde otra PC se entra por túnel: `ssh -L 9230:127.0.0.1:9230 usuario@maquina` y luego `http://localhost:9230`.
+- `serve` no arranca sin un admin activo. Fuera de loopback exige `--allow-remote` y un proxy TLS delante.
+- `--role` es opcional (por defecto `viewer`). `user passwd <nombre> --password-stdin` lee la nueva contraseña de stdin (una línea), igual que `user add`.
+- `--allow-remote` con `0.0.0.0` o una IP de Tailscale también exige listar ese nombre o IP en `allowed_hosts`; si no, la consola responde 400 `bad_host`.
+- Seguridad de la cookie: la sesión usa una cookie `gr_session_<puerto>` (una por consola) HttpOnly y SameSite=Strict, pero, como cualquier cookie de localhost, también se envía a otros puertos locales. En una PC compartida usa el túnel SSH hacia un puerto local dedicado y pulsa «Salir» al terminar.
+- Roles: `viewer` lee y descarga entregables de auditorías selladas; `admin` además descarga los de auditorías abiertas y ve el registro de la consola.
+- API: `/api/v1/…`; el esquema está en `/api/v1/openapi.json`, tras el login.
+- Configuración: `plugins.entries.ghost-recon.settings.console` en `config.yaml` (`host`, `port`, `session_idle_hours`, `session_max_days`, `allowed_hosts`).
+- Demo local sin LLM: `python ghost-recon/demo/console_demo.py`.
+- Diseño completo y próximos hitos (lanzar órdenes, exportar ZIP, búsqueda, avisos): `ghost-recon/specs/2026-10-02-ghost-recon-console-design.md`.
+
 ## 4. Herramientas del agente (toolset `ghost_recon`)
 
 Todas devuelven JSON. Errores: `{"error": "…"}`.

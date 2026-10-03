@@ -152,6 +152,18 @@ Leyenda: `[ ]` pendiente · `[~]` en curso · `[x]` hecho · `[!]` bloqueado (ve
 - [ ] Informe de metodología como plantilla `06_Report/methodology.md` pre-rellenada por el plugin (hoy lo escribe el agente según `ghost-recon-deliverables` §6)
 - [ ] `gr_swarm_run` programático con `ctx.subagent_lifecycle` (hoy el enjambre se lanza con `delegate_task` desde la skill, que es el primitivo probado)
 
+### Fase 8 — Consola web (spec `ghost-recon/specs/2026-10-02-ghost-recon-console-design.md`)
+- [x] H1 · Base: `hermes ghostrecon serve|user|token`, login/roles/tokens, API de lectura, verificación de sellos cacheada, descargas contenidas, frontend (Inicio, Casos, Caso con 7 pestañas, Sistema), demo `console_demo.py`
+- [ ] H2 · Ejecuciones: navegador de carpetas, asistente Nueva auditoría con notas de contexto, motor de jobs desacoplado, vista en vivo, Re-run/Review
+  - Pendientes de la revisión final de H1 (antes de tocar el esquema):
+    - migraciones versionadas de `console_*` con tabla de versión de una fila
+    - lock en la contabilidad del bloqueo de login
+    - `touch_session` best-effort y cabeceras de seguridad en los 500
+    - prueba E2E real con `HERMES_HOME` temporal + `config.yaml`
+    - purga de sesiones vencidas
+- [ ] H3 · Exportación `.zip` verificable, tablas CSV/XLSX, búsqueda entre casos, avisos, verificación de hash al descargar entregables de auditorías selladas (409 `hash_mismatch`, registro de descargas denegadas)
+- [ ] H4 · Instaladores `--console`/servicio, `CONSOLE.md`, aceptación en la máquina dedicada
+
 ---
 
 ## 3. Riesgos y cómo se mitigaron
@@ -172,3 +184,4 @@ Leyenda: `[ ]` pendiente · `[~]` en curso · `[x]` hecho · `[!]` bloqueado (ve
 - 2026-10-02 · v1 · Plan inicial, decisiones D1–D11, fases 0–7 (Claude, sesión Cowork con Jean).
 - 2026-10-02 · v1.1 · Fases 1–6 completadas en el workspace cloud: plugin `plugins/ghost_recon` (14 tools, 4 comandos, CLI, system-prompt), 18 skills (pasan `test_authoring_standards`), instalador, demo, 53 tests + smoke test verdes; plugin cargado por el camino real de discovery de Hermes con HERMES_HOME temporal. Pendiente: smoke test con agente real en la máquina autónoma (HANDOFF §4) y Fase 7.
 - 2026-10-02 · v1.2 · Revisión de código independiente (sub-agente) y correcciones: `open_case` ya no sobreescribe hashes auditados ni convierte lo nuevo en DUP_PRIOR antes de un rerun; evidencia MODIFIED entra al enjambre del rerun y conserva el hash anterior en `meta.previous_hashes`; ZIP cifrados/archivos ilegibles se registran como UNREADABLE sin abortar el intake; workbook limpia caracteres de control y trata todo texto que empieza por `=` como texto; `secret()` no cae al env de otro perfil; `max_parallel` acotado por `delegation.max_concurrent_children`; `gr_swarm_plan(mode=review)` devuelve `delegate_tasks`; `Store` serializado con RLock; instalador compatible con bash 3.2 y con el comando real `hermes skills opt-in --sync`. 55 tests + smoke verdes.
+- 2026-10-02 · v1.3 · Fase 8 (consola web) diseñada y H1 implementado: servidor propio en loopback (túnel), login con roles admin/viewer y tokens Bearer, API `/api/v1` de solo lectura sobre la BD de casos, caché de verificación de sellos, descargas contenidas en la carpeta de cada auditoría, frontend sin build. Sin cambios al core de Hermes.

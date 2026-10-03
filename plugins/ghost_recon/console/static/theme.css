@@ -1,0 +1,37 @@
+/* Ghost Recon theme tokens. Replace this file to apply a brand: colors, type and the logo words. */
+:root {
+  --gr-font: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --gr-mono: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  --gr-logo-left: "GHOST";
+  --gr-logo-right: "RECON";
+  --gr-radius: 6px;
+
+  --gr-bg: #f4f6f9;
+  --gr-surface: #ffffff;
+  --gr-border: #dfe4ec;
+  --gr-row-border: #eef1f5;
+  --gr-row-hover: #f6f8fb;
+  --gr-row-detail: #f8fafc;
+  --gr-input-border: #c9d2df;
+  --gr-text: #1d2433;
+  --gr-muted: #66738a;
+
+  --gr-topbar: #101826;
+  --gr-topbar-text: #e8edf5;
+  --gr-topbar-input: #1e2a3d;
+  --gr-sidebar: #16202f;
+  --gr-sidebar-text: #b7c3d4;
+  --gr-sidebar-active: #24324a;
+  --gr-accent: #59d3a5;
+
+  --gr-primary: #2f6fed;
+  --gr-primary-text: #ffffff;
+  --gr-ghost-bg: #e8edf5;
+
+  --gr-ok-bg: #d1fadf;   --gr-ok: #05603a;
+  --gr-info-bg: #dbe8ff; --gr-info: #1849a9;
+  --gr-risk-critical-bg: #fbd5d5; --gr-risk-critical: #8a1c1c;
+  --gr-risk-high-bg: #fde2e1;     --gr-risk-high: #b42318;
+  --gr-risk-medium-bg: #fef0c7;   --gr-risk-medium: #93370d;
+  --gr-risk-low-bg: #eef1f5;      --gr-risk-low: #475467;
+}

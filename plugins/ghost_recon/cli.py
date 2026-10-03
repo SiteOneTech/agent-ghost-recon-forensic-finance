@@ -4,6 +4,7 @@
 Verbs: init | doctor | cases | case <id|folder> | audits <id|folder> | timeline <id|folder> | verify <audit_id>
        | export <id|folder> --out file.json | import <case.json> | open <folder> [--name] | start <case_id> [--kind]
        | seal <audit_id> [--force] | pack <audit_id> [--formats md,pdf,xlsx]
+       | serve [--port] | user add|list|passwd|disable|enable | token create|list|revoke   (consola web)
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ from pathlib import Path
 from . import runtime
 from .core import ids, service
 from .core.reports import pack as pack_mod
+from .console import cli as console_cli
 
 
 def register_cli(sub: argparse.ArgumentParser) -> None:
@@ -33,6 +35,7 @@ def register_cli(sub: argparse.ArgumentParser) -> None:
     p = subs.add_parser("start", help="Start the next audit (intake / evidence pass)"); p.add_argument("case_id"); p.add_argument("--kind", default="initial", choices=["initial", "rerun"]); p.add_argument("--context")
     p = subs.add_parser("seal", help="Seal an audit"); p.add_argument("audit_id"); p.add_argument("--force", action="store_true")
     p = subs.add_parser("pack", help="Build the deliverable pack"); p.add_argument("audit_id"); p.add_argument("--formats", default="md,pdf,xlsx")
+    console_cli.register(subs)
 
 
 def _print(obj, as_json: bool) -> None:
@@ -45,6 +48,8 @@ def _print(obj, as_json: bool) -> None:
 def main(args: argparse.Namespace) -> int:
     from .commands import cmd_case, cmd_cases, cmd_doctor
     cmd = getattr(args, "gr_command", None)
+    if cmd in console_cli.CONSOLE_VERBS:
+        return console_cli.dispatch(args)
     st = runtime.store()
     try:
         if cmd in (None, "init"):
