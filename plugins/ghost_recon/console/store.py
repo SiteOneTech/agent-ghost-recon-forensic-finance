@@ -173,8 +173,7 @@ class ConsoleStore:
 
     # ---------------------------------------------------------------- sessions
     def create_session(self, *, user_id: int, token_sha256: str, csrf_token: str, expires_at: str,
-                       ip: str, user_agent: str) -> int:
-        now = utcnow()
+                       ip: str, user_agent: str, now: str) -> int:
         return self._insert(
             "INSERT INTO console_sessions(user_id, token_sha256, csrf_token, created_at, last_seen_at, expires_at, ip,"
             " user_agent) VALUES (?,?,?,?,?,?,?,?)", (user_id, token_sha256, csrf_token, now, now, expires_at, ip, user_agent))

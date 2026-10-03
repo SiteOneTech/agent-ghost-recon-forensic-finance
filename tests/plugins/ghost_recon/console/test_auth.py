@@ -118,3 +118,30 @@ def test_raw_session_and_api_tokens_never_reach_the_db(svc, cstore):
     dump = "\n".join(str(v) for table in ("console_sessions", "console_tokens", "console_audit_log")
                      for row in cstore.conn.execute(f"SELECT * FROM {table}") for v in tuple(row))
     assert raw_session not in dump and raw_token not in dump
+
+
+def test_session_timestamps_come_from_injected_clock():
+    """Invariant: session timestamps must come from auth's injected clock, not wall-clock time.
+
+    If last_seen_at is set by wall-clock utcnow() in store.py, then tests with a pinned or far-off
+    clock will have idle times calculated wrong (e.g. a login at wall-clock 2026 with clock pinned at 2031
+    appears to have negative idle, or idle hours in the thousands). This proves the timestamps sync.
+    """
+    from plugins.ghost_recon.console.store import ConsoleStore
+    # Use a clock far from real wall time to prove the issue would manifest if timestamps came from wall-clock
+    clock = Clock()
+    clock.now = datetime(2031, 1, 1, 12, 0, tzinfo=timezone.utc)
+    cstore = ConsoleStore.open_default()
+    svc = AuthService(cstore, ConsoleSettings(session_idle_hours=12, session_max_days=7), clock=clock)
+    svc.add_user("distant", "password-far-away-12", "admin")
+
+    raw, _ = svc.login("distant", "password-far-away-12")
+    # Advance 11 hours in the injected clock; session should still be valid (idle < 12h)
+    clock.advance(hours=11)
+    assert svc.resolve_session(raw) is not None, "session must be valid 11 hours after login"
+    # Advance 13 more hours in the injected clock; session should now be expired (idle >= 12h, but we added a touch)
+    # Actually since resolve_session touches, we need to advance past 12h total from the original login
+    clock.now = datetime(2031, 1, 1, 12, 0, tzinfo=timezone.utc)  # reset to login time
+    raw2, _ = svc.login("distant", "password-far-away-12")
+    clock.advance(hours=13)
+    assert svc.resolve_session(raw2) is None, "session must expire after 13 hours of idle (> 12h limit)"

@@ -161,7 +161,7 @@ class AuthService:
         csrf = secrets.token_urlsafe(24)
         sid = self.cstore.create_session(user_id=user["id"], token_sha256=_sha(raw), csrf_token=csrf,
                                          expires_at=_iso(now + timedelta(days=self.settings.session_max_days)),
-                                         ip=ip, user_agent=(user_agent or "")[:200])
+                                         ip=ip, user_agent=(user_agent or "")[:200], now=_iso(now))
         self.cstore.update_user(uname, last_login_at=_iso(now))
         self.cstore.log("login", user_id=user["id"], username=uname, ip=ip)
         return raw, Principal(user["id"], uname, user["role"], "session", sid, csrf)
