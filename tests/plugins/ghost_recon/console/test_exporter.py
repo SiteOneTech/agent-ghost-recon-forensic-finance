@@ -167,3 +167,41 @@ def test_two_exports_in_the_same_minute_never_share_a_file(store, cstore, seeded
     assert _open(first)[1]["export_id"] == 1 and _open(second)[1]["export_id"] == 2
     for result in (first, second):
         assert hashlib.sha256(Path(result["path"]).read_bytes()).hexdigest() == result["sha256"]
+
+
+def test_a_consistent_swap_of_the_seal_and_a_file_between_verify_and_pack_fails(store, cstore, seeded, dest,
+                                                                              monkeypatch):
+    """The seal file packed must be the one the audit registered, not one re-sealed after the check."""
+    folder = seeded["a1_folder"]
+    report = next((folder / "06_Report").glob("*.md"))
+    real = exporter.verify_seals
+
+    def swap_after_verify(*args, **kw):
+        verified = real(*args, **kw)
+        report.write_bytes(report.read_bytes() + b"\nreemplazado")
+        seal_path = folder / "SEALED.json"
+        record = json.loads(seal_path.read_text(encoding="utf-8"))
+        record["files"][f"06_Report/{report.name}"] = hashlib.sha256(report.read_bytes()).hexdigest()
+        seal_path.write_text(json.dumps(record), encoding="utf-8")
+        return verified
+
+    monkeypatch.setattr(exporter, "verify_seals", swap_after_verify)
+    with pytest.raises(ExportError) as failed:
+        _build(store, cstore, seeded, dest)
+    assert failed.value.code == "seal_broken" and "SEALED.json" in failed.value.message
+    assert list(dest.iterdir()) == []
+
+
+def test_a_failure_while_writing_the_sidecar_leaves_no_zip_part_or_sidecar(store, cstore, seeded, dest, monkeypatch):
+    real = Path.write_bytes
+
+    def broken_sidecar(self, data):
+        if self.name.endswith(".sha256.part"):
+            real(self, data[:5])  # a partial sidecar on disk, then the failure
+            raise OSError("disk full")
+        return real(self, data)
+
+    monkeypatch.setattr(Path, "write_bytes", broken_sidecar)
+    with pytest.raises(OSError):
+        _build(store, cstore, seeded, dest)
+    assert list(dest.iterdir()) == []

@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import stat
 import zipfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -127,10 +128,18 @@ class Entry:
     path: Path
     audit_folder: Optional[Path] = None      # set for the files of a SEALED audit: they are checked as packed
     seal: Optional[Dict[str, str]] = None    # that audit's SEALED.json hashes
+    seal_sha256: Optional[str] = None        # the audit row's seal hash: SEALED.json must still hash to it
 
 
 def _is_link(path: Path) -> bool:
-    return path.is_symlink() or path.is_junction()
+    """Symlink or Windows reparse point (junction); ``Path.is_junction`` only exists on Python 3.12+."""
+    if path.is_symlink():
+        return True
+    try:
+        attrs = getattr(os.lstat(path), "st_file_attributes", 0)  # Windows only; 0 elsewhere
+    except OSError:
+        return False
+    return bool(attrs & stat.FILE_ATTRIBUTE_REPARSE_POINT)
 
 
 def _arc(path: Path, root: Path) -> str:
@@ -176,7 +185,8 @@ def plan_entries(sel: Selection) -> Tuple[List[Entry], List[Dict[str, str]]]:
         folder = resolve_within(audit["folder"], [root])
         seal = None if audit["draft"] else integrity.seal_hashes(folder)
         sealed_folder = None if audit["draft"] else folder
-        entries += [Entry(_arc(p, root), p, sealed_folder, seal) for p in _walk(folder, root, skipped)]
+        entries += [Entry(_arc(p, root), p, sealed_folder, seal, audit.get("seal_sha256"))
+                    for p in _walk(folder, root, skipped)]
     return entries, skipped
 
 
@@ -200,8 +210,11 @@ def _zip_time(mtime: float) -> Tuple[int, int, int, int, int, int]:
     return stamp.timetuple()[:6]
 
 
-def _pack(zf: zipfile.ZipFile, entry: Entry) -> Tuple[str, int]:
-    """Stream one file into the archive, hashing exactly the bytes written."""
+def _pack(zf: zipfile.ZipFile, entry: Entry) -> Tuple[str, int, Optional[bytes]]:
+    """Stream one file into the archive, hashing exactly the bytes written. A sealed audit's SEALED.json (small)
+    also comes back, so it is judged on the very bytes that were packed."""
+    keep = entry.audit_folder is not None and entry.path.name == cf.SEALED_FILE
+    kept: List[bytes] = []
     st = entry.path.stat()
     info = zipfile.ZipInfo(entry.arcname, date_time=_zip_time(st.st_mtime))
     info.compress_type = zipfile.ZIP_DEFLATED
@@ -211,13 +224,35 @@ def _pack(zf: zipfile.ZipFile, entry: Entry) -> Tuple[str, int]:
             digest.update(chunk)
             size += len(chunk)
             dst.write(chunk)
-    return digest.hexdigest(), size
+            if keep:
+                kept.append(chunk)
+    return digest.hexdigest(), size, b"".join(kept) if keep else None
 
 
-def _check_sealed(entry: Entry, sha: str) -> str:
+def _manifest_hash(files: Dict[str, str]) -> str:
+    """The seal hash the DB stores (``casefolder.seal``): sha256 over the sorted ``relpath sha256`` lines."""
+    return hashlib.sha256("".join(f"{k} {v}\n" for k, v in sorted(files.items())).encode("utf-8")).hexdigest()
+
+
+def _seal_matches_row(entry: Entry, data: Optional[bytes]) -> bool:
+    """The SEALED.json packed describes exactly the files the audit row registered, and the hashes the other files
+    are checked against (read when the entries were planned) are the ones in it."""
+    try:
+        files = json.loads(data or b"").get("files")
+    except (ValueError, AttributeError):
+        return False
+    return (isinstance(files, dict) and bool(entry.seal_sha256) and _manifest_hash(files) == entry.seal_sha256
+            and files == entry.seal)
+
+
+def _check_sealed(entry: Entry, sha: str, data: Optional[bytes]) -> str:
     """The packed bytes of a sealed file must still be the sealed ones; returns its path inside the audit."""
     rel = integrity.relative(entry.audit_folder, entry.path)
-    if rel != cf.SEALED_FILE:  # the seal itself: its hash is the audit's seal_sha256, checked by verify_seals
+    if rel == cf.SEALED_FILE:  # the seal itself must be the one the audit row registered, as packed
+        if not _seal_matches_row(entry, data):
+            raise ExportError(409, "seal_broken", f"{entry.arcname} cambió mientras se exportaba (no coincide con el "
+                              "sello registrado de la auditoría). No se exportó nada.")
+    else:
         try:
             integrity.check(rel, sha, integrity.expected_hash(entry.seal, rel))
         except integrity.IntegrityError as exc:
@@ -257,20 +292,17 @@ def build(store: Store, cstore: ConsoleStore, sel: Selection, *, export_id: int,
     try:
         with zipfile.ZipFile(part, "w", compression=zipfile.ZIP_DEFLATED, allowZip64=True) as zf:
             for done, entry in enumerate(entries, 1):
-                sha, size = _pack(zf, entry)
+                sha, size, seal_bytes = _pack(zf, entry)
                 if entry.audit_folder is not None:
-                    packed.setdefault(entry.audit_folder, set()).add(_check_sealed(entry, sha))
+                    packed.setdefault(entry.audit_folder, set()).add(_check_sealed(entry, sha, seal_bytes))
                 files.append({"path": entry.arcname, "size": size, "sha256": sha})
                 if progress:
                     progress(done, len(entries))
-            skipped_paths = {s["path"] for s in skipped}
             for folder, rels in packed.items():
-                seal = integrity.seal_hashes(folder) or {}
-                lost = sorted(rel for rel in set(seal) - rels
-                              if _arc(folder / rel, sel.results_root) not in skipped_paths)
+                lost = sorted(set(integrity.seal_hashes(folder) or {}) - rels)  # links count as missing too
                 if lost:
-                    raise ExportError(409, "seal_broken", f"{_arc(folder / lost[0], sel.results_root)} desapareció "
-                                      "mientras se exportaba la auditoría sellada. No se exportó nada.")
+                    raise ExportError(409, "seal_broken", f"{_arc(folder / lost[0], sel.results_root)} falta o es un "
+                                      "enlace en la auditoría sellada. No se exportó nada.")
             manifest = {
                 "export_id": export_id, "case_id": sel.case["id"], "case_name": sel.case["name"], "scope": sel.scope,
                 "seq": sel.seq, "draft": sel.draft,
@@ -283,7 +315,15 @@ def build(store: Store, cstore: ConsoleStore, sel: Selection, *, export_id: int,
             zf.writestr(MANIFEST_NAME, json.dumps(manifest, ensure_ascii=False, indent=2))
         sha = _sha256_file(part)
         os.replace(part, final)
-        (dest_dir / f"{name}.sha256").write_bytes(f"{sha}  {name}\n".encode("utf-8"))  # LF on every OS
+        sidecar = dest_dir / f"{name}.sha256"
+        sidecar_part = dest_dir / f"{name}.sha256.part"
+        try:
+            sidecar_part.write_bytes(f"{sha}  {name}\n".encode("utf-8"))  # LF on every OS
+            os.replace(sidecar_part, sidecar)
+        except BaseException:
+            sidecar_part.unlink(missing_ok=True)
+            final.unlink(missing_ok=True)  # never a ZIP without its sidecar
+            raise
     except BaseException:
         part.unlink(missing_ok=True)
         raise
