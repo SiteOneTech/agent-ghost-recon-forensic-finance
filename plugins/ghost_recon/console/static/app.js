@@ -1,6 +1,7 @@
 // Console bootstrap: hash router, session bootstrap and the application shell (top bar + sidebar).
 import { api, setCsrf } from "./lib/api.js";
 import { h, mount } from "./lib/dom.js";
+import { noticeToggle, startWatcher, stopWatcher } from "./lib/notices.js";
 import * as caseView from "./views/case.js";
 import * as cases from "./views/cases.js";
 import { errorState } from "./views/components.js";
@@ -8,6 +9,7 @@ import * as home from "./views/home.js";
 import * as job from "./views/job.js";
 import * as jobs from "./views/jobs.js";
 import * as login from "./views/login.js";
+import { searchBox } from "./views/search.js";
 import * as system from "./views/system.js";
 import * as users from "./views/users.js";
 import * as wizard from "./views/wizard.js";
@@ -68,6 +70,7 @@ function signedOut(notice) {
   state.user = null;
   state.notice = notice || null;
   setCsrf(null);
+  stopWatcher();
   window.location.hash = "#/login";
 }
 
@@ -91,10 +94,11 @@ function shell(navId) {
   const root = h("div", { class: "shell" },
     h("header", { class: "topbar" },
       h("a", { class: "brand", href: "#/", "aria-label": "Ghost Recon, inicio" }),
-      h("input", { class: "search", type: "search", placeholder: "Buscar entre casos", disabled: true, title: "Próximamente", "aria-label": "Buscar entre casos" }),
+      searchBox(),
       admin ? h("a", { class: "btn", href: "#/new" }, "+ Nueva auditoría")
         : h("button", { class: "btn", disabled: true, title: "Solo los administradores lanzan auditorías." }, "+ Nueva auditoría"),
       h("span", { class: "who" }, `${state.user.username} · ${state.user.role}`),
+      noticeToggle(),
       h("button", { class: "btn ghost small", onclick: logout }, "Salir")),
     h("nav", { class: "sidebar", "aria-label": "Secciones" }, NAV.map((n) =>
       h("a", { class: n.id === navId ? "nav-item active" : "nav-item", href: n.href, "aria-current": n.id === navId ? "page" : null }, n.label))),
@@ -133,6 +137,7 @@ async function render() {
   }
   const { root, main } = shell(route.nav);
   mount(app, root);
+  startWatcher(); // job-end notices while the console is open (no-op until the operator opts in)
   mount(main, h("p", { class: "muted" }, "Cargando…"));
   let page;
   try {

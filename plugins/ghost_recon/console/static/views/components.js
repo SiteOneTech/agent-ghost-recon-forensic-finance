@@ -1,6 +1,6 @@
 // Shared view pieces: KPI tiles, tables with expandable rows, empty/error states, the cases and jobs tables, form
 // fields, dialogs and copy-to-clipboard.
-import { download } from "../lib/api.js";
+import { ApiError, download } from "../lib/api.js";
 import { h } from "../lib/dom.js";
 import { COMMAND_LABEL, fmtDate, fmtDuration, jobChip, label, riskChips, sealChip } from "../lib/format.js";
 
@@ -87,20 +87,22 @@ export function jobsTable(rows, { showCase = true, empty = "Sin ejecuciones." } 
 }
 
 /** A button that downloads an API attachment in place; a refusal is shown in `note` (or after the button). */
-export function downloadButton(text, path, { query = () => ({}), note = null, title = null, small = true } = {}) {
+export function downloadButton(text, path, { query = () => ({}), note = null, title = null, small = true, onBusy = null } = {}) {
   const status = note || h("span", { class: "download-note", role: "status" });
   const button = h("button", { class: small ? "btn ghost small" : "btn ghost", type: "button", title }, text);
   button.addEventListener("click", async () => {
     button.disabled = true;
+    if (onBusy) onBusy(true);
     status.textContent = "";
     status.classList.remove("error");
     try {
       await download(path, query());
     } catch (err) {
-      status.textContent = err.message;
+      status.textContent = err instanceof ApiError ? err.message : "No se pudo conectar con la consola.";
       status.classList.add("error");
     } finally {
       button.disabled = false;
+      if (onBusy) onBusy(false);
     }
   });
   return note ? button : h("span", { class: "download" }, button, status);
@@ -110,10 +112,14 @@ export function downloadButton(text, path, { query = () => ({}), note = null, ti
 export function tableExport(caseId, table, filters = () => ({})) {
   const note = h("span", { class: "download-note", role: "status" });
   const path = (fmt) => `/cases/${encodeURIComponent(caseId)}/${table}.${fmt}`;
-  return h("div", { class: "table-export" }, h("span", { class: "muted" }, "Exportar con los filtros activos:"),
-    downloadButton("CSV", path("csv"), { query: filters, note, title: "CSV en UTF-8 (se abre en Excel con acentos)" }),
-    downloadButton("XLSX", path("xlsx"), { query: filters, note, title: "Libro de Excel con metadatos Ghost Recon" }),
-    note);
+  const buttons = [];
+  const onBusy = (busy) => {
+    for (const b of buttons) b.disabled = busy; // one download at a time: both buttons wait for either
+  };
+  buttons.push(
+    downloadButton("CSV", path("csv"), { query: filters, note, onBusy, title: "CSV en UTF-8 (se abre en Excel con acentos)" }),
+    downloadButton("XLSX", path("xlsx"), { query: filters, note, onBusy, title: "Libro de Excel con metadatos Ghost Recon" }));
+  return h("div", { class: "table-export" }, h("span", { class: "muted" }, "Exportar con los filtros activos:"), ...buttons, note);
 }
 
 export function debounce(fn, ms) {

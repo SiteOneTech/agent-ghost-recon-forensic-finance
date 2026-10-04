@@ -41,7 +41,13 @@ async function failure(res, path) {
 
 function attachmentName(header) {
   const star = /filename\*=utf-8''([^;]+)/i.exec(header || "");
-  if (star) return decodeURIComponent(star[1]);
+  if (star) {
+    try {
+      return decodeURIComponent(star[1]);
+    } catch {
+      // malformed percent-encoding: fall back to the plain filename
+    }
+  }
   const plain = /filename="([^"]+)"/i.exec(header || "");
   return plain ? plain[1] : "descarga";
 }

@@ -2,6 +2,7 @@ import { api } from "../../lib/api.js";
 import { h } from "../../lib/dom.js";
 import { chip, fmtBytes, fmtDate, label, sealCheckChip, shortHash } from "../../lib/format.js";
 import { dataTable, downloadButton, toggleDetail } from "../components.js";
+import { openExportDialog } from "../export.js";
 
 const CHECK_LABEL = {
   manifest: "manifiesto", evidence_register: "registro de evidencia", model_json: "model.json", report_md: "informe MD",
@@ -19,12 +20,25 @@ function sealProblem(detail) {
   return "La verificación del sello falló por una causa no identificada.";
 }
 
-async function auditDetail(caseId, audit, user) {
-  const base = `/cases/${encodeURIComponent(caseId)}/audits/${audit.seq}`;
+function auditZip(detail, audit, user) {
+  const blocked = audit.status !== "sealed" && user.role !== "admin"
+    ? "Solo se exportan auditorías selladas; un admin puede incluir las abiertas como borrador." : null;
+  const button = h("button", { class: "btn ghost small", type: "button", disabled: Boolean(blocked), title: blocked },
+    `ZIP de ${audit.seq}`);
+  button.addEventListener("click", (e) => {
+    e.stopPropagation();
+    openExportDialog({ caseId: detail.case.id, caseName: detail.case.name, audits: detail.audits, user, seq: audit.seq });
+  });
+  return button;
+}
+
+async function auditDetail(detail, audit, user) {
+  const base = `/cases/${encodeURIComponent(detail.case.id)}/audits/${audit.seq}`;
   const [d, reports] = await Promise.all([api(base), api(`${base}/reports`)]);
   const canDownload = audit.status === "sealed" || user.role === "admin";
   const broken = d.seal_check && !d.seal_check.ok ? d.seal_check.detail : null;
   return h("div", { class: "detail" },
+    h("div", { class: "actions" }, auditZip(detail, audit, user)),
     h("h3", {}, "Completitud"),
     h("div", { class: "checks" }, Object.entries(d.completion.checks).map(([k, ok]) =>
       chip(`${ok ? "✓" : "✗"} ${CHECK_LABEL[k] || k}`, ok ? "ok" : "risk-high"))),
@@ -41,7 +55,7 @@ async function auditDetail(caseId, audit, user) {
     canDownload ? null : h("p", { class: "muted" }, "Los entregables de auditorías abiertas solo los descarga un admin."));
 }
 
-export async function render({ caseId, detail, user }) {
+export async function render({ detail, user }) {
   return h("section", { class: "card" }, dataTable([
     { title: "Auditoría", cell: (a) => h("strong", {}, a.seq) },
     { title: "Tipo", cell: (a) => label.auditKind(a.kind) },
@@ -50,5 +64,5 @@ export async function render({ caseId, detail, user }) {
     { title: "Sellada", cell: (a) => fmtDate(a.sealed_at) },
     { title: "Sello", cell: (a) => sealCheckChip(a) },
     { title: "Entregables", class: "num", cell: (a) => String(a.reports) },
-  ], detail.audits, { empty: "Sin auditorías.", onRow: (a, tr) => toggleDetail(tr, () => auditDetail(caseId, a, user)) }));
+  ], detail.audits, { empty: "Sin auditorías.", onRow: (a, tr) => toggleDetail(tr, () => auditDetail(detail, a, user)) }));
 }

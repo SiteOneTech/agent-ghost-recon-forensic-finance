@@ -1,10 +1,11 @@
 // Ejecución: header with its actions, phase bar, live activity feed (SSE), "Hasta ahora" counters and, once it ends,
 // the agent's summary, seal state, deliverables, tokens and the technical log.
-import { api } from "../lib/api.js";
+import { api, ApiError } from "../lib/api.js";
 import { h, mount } from "../lib/dom.js";
 import { COMMAND_LABEL, fmtDate, fmtDuration, jobChip, label, safeHref, sealCheckChip, secondsSince } from "../lib/format.js";
 import { latestGuard } from "../lib/latest.js";
 import { copyButton, kpi } from "./components.js";
+import { openExportDialog } from "./export.js";
 
 const FEED_MAX = 500;
 const FINDING_KINDS = ["exception", "anomaly", "finding", "question"];
@@ -56,7 +57,25 @@ function tokensText(t) {
   return `${n(t.total)} (entrada ${n(t.input)} · salida ${n(t.output)})`;
 }
 
-function outcome(job) {
+function exportPackage(job, user) {
+  if (!job.case_id) return "—";
+  const button = h("button", { class: "btn ghost small", type: "button" }, "Exportar resultados (.zip)");
+  const note = h("span", { class: "download-note", role: "status" });
+  button.addEventListener("click", async () => {
+    note.textContent = "";
+    note.classList.remove("error");
+    try {
+      const detail = await api(`/cases/${encodeURIComponent(job.case_id)}`);
+      openExportDialog({ caseId: job.case_id, caseName: detail.case.name, audits: detail.audits, user });
+    } catch (err) {
+      note.textContent = err instanceof ApiError ? err.message : "No se pudo conectar con la consola.";
+      note.classList.add("error");
+    }
+  });
+  return [button, note];
+}
+
+function outcome(job, user) {
   if (job.active) return null;
   const a = job.last_audit;
   return h("section", { class: "card" }, h("h2", {}, "Resultado"),
@@ -66,8 +85,7 @@ function outcome(job) {
       h("dt", {}, "Última auditoría"), h("dd", {}, a ? [`${a.seq} · ${label.auditStatus(a.status)} `, sealCheckChip(a)] : "—"),
       h("dt", {}, "Entregables"), h("dd", {}, a && job.case_id
         ? h("a", { href: `#/cases/${encodeURIComponent(job.case_id)}/audits` }, `${a.reports} en ${a.seq}`) : "—"),
-      h("dt", {}, "Paquete de resultados"), h("dd", {},
-        h("button", { class: "btn ghost small", type: "button", disabled: true, title: "Próximamente" }, "Exportar resultados (.zip)")),
+      h("dt", {}, "Paquete de resultados"), h("dd", {}, exportPackage(job, user)),
       h("dt", {}, "Tokens"), h("dd", {}, tokensText(job.tokens))));
 }
 
@@ -147,7 +165,7 @@ export async function render({ params, user, onLeave }) {
     tick();
     mount(bar, phaseBar(job, lastSeen));
     mount(progressBox, counters(job.progress));
-    mount(result, outcome(job));
+    mount(result, outcome(job, user));
   }
 
   function addEvents(items) {
