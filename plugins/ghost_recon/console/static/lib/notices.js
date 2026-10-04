@@ -62,7 +62,7 @@ async function poll() {
   polling = true;
   const mine = generation;
   try {
-    const jobs = (await api("/jobs", { query: { limit: RECENT } })).items;
+    const jobs = (await api("/jobs", { query: { limit: RECENT }, background: true })).items;
     if (mine !== generation || !on()) return; // signed out, another user or switched off while the request ran
     const before = known;
     known = new Map(jobs.map((j) => [j.id, j.active])); // recorded first: a failing notice is never repeated

@@ -1,6 +1,7 @@
 // Results ZIP dialog: the scope (whole case or one audit), unsealed audits for admins (they go in marked as a draft),
 // what goes in and why the rest stays out (GET …/export/preview), then the background build with its progress, the
-// SHA-256 and the download.
+// SHA-256 and the download (re-checked on click, so an expired or removed ZIP explains itself instead of opening an
+// error page).
 import { api, ApiError, downloadUrl } from "../lib/api.js";
 import { h, mount } from "../lib/dom.js";
 import { chip, fmtBytes, label } from "../lib/format.js";
@@ -10,6 +11,9 @@ import { copyButton, downloadButton, field, modal } from "./components.js";
 const POLL_MS = 1000;
 const PENDING = ["queued", "building"];
 const OFFLINE = "No se pudo conectar con la consola.";
+const EXPIRED = "Este ZIP venció y ya no está disponible: vuelve a exportar.";
+const GONE = "Este ZIP ya no está disponible: vuelve a exportar.";
+const ROOT_FILES = ["case.json", "corpus_inventory.csv"];
 
 function problem(text) {
   return h("div", { class: "error", role: "alert" }, text);
@@ -18,14 +22,45 @@ function problem(text) {
 const reason = (err) => (err instanceof ApiError ? err.message : OFFLINE);
 
 function planView(view) {
+  const held = view.skipped || []; // root files left out while a job may be rewriting them
+  const roots = ROOT_FILES.filter((name) => !held.some((s) => s.path === name));
+  const out = [...view.excluded.map((e) => `${e.seq}: ${e.text}`), ...held.map((s) => `${s.path}: ${s.text}`)];
   return h("div", { class: "export-plan" },
     h("h3", {}, "Entra en el ZIP"),
     h("ul", { class: "plan" }, view.audits.map((a) => h("li", {}, `${a.seq} · ${label.auditKind(a.kind)} `,
       a.draft ? chip("BORRADOR: sin sellar", "risk-medium") : chip("sellada: se verifica antes de empaquetar", "ok")))),
-    h("p", { class: "muted" }, "Además: case.json, corpus_inventory.csv, los contextos de la consola (_console/) y "
+    h("p", { class: "muted" }, `Además: ${[...roots, "los contextos de la consola (_console/)"].join(", ")} y `
       + "EXPORT_MANIFEST.json con el SHA-256 de cada archivo. La evidencia original nunca se exporta."),
-    view.excluded.length ? h("h3", {}, "Queda fuera") : null,
-    view.excluded.length ? h("ul", { class: "plan" }, view.excluded.map((e) => h("li", {}, `${e.seq}: ${e.text}`))) : null);
+    out.length ? h("h3", {}, "Queda fuera") : null,
+    out.length ? h("ul", { class: "plan" }, out.map((text) => h("li", {}, text))) : null);
+}
+
+/** «Descargar .zip»: a plain link (a large ZIP streams straight to disk), but each click first asks whether the ZIP
+ *  is still there; only then the browser follows it. Otherwise the reason shows next to the link. */
+function zipLink(row) {
+  const link = h("a", { class: "btn", href: downloadUrl(`/exports/${row.id}/download`), download: row.file_name }, "Descargar .zip");
+  const note = h("span", { class: "download-note error", role: "alert" });
+  let checked = false;
+  link.addEventListener("click", async (event) => {
+    if (checked) { // the re-check below passed: this is its own click, let the browser download
+      checked = false;
+      return;
+    }
+    event.preventDefault();
+    note.textContent = "";
+    try {
+      const fresh = await api(`/exports/${row.id}`);
+      if (fresh.status === "succeeded" && fresh.available) {
+        checked = true;
+        link.click();
+        return;
+      }
+      note.textContent = fresh.status === "expired" ? EXPIRED : GONE;
+    } catch (err) {
+      note.textContent = reason(err); // a lost session answers 401 and the console asks to log in again
+    }
+  });
+  return [link, note];
 }
 
 function finished(row) {
@@ -33,7 +68,7 @@ function finished(row) {
     h("p", {}, `Listo: ${row.file_name} · ${fmtBytes(row.size)} · ${row.files_total} archivos`),
     h("p", {}, "SHA-256 del ZIP: ", h("span", { class: "mono" }, row.sha256)),
     h("div", { class: "actions" },
-      h("a", { class: "btn", href: downloadUrl(`/exports/${row.id}/download`), download: row.file_name }, "Descargar .zip"),
+      zipLink(row),
       downloadButton("Descargar .sha256", `/exports/${row.id}/sha256`, { small: false }),
       copyButton(row.sha256, "Copiar SHA-256")));
 }
@@ -87,7 +122,7 @@ export function openExportDialog({ caseId, caseName, audits, user, seq = null })
   async function follow(id) {
     let row;
     try {
-      row = await api(`/exports/${id}`);
+      row = await api(`/exports/${id}`, { background: true });
     } catch (err) {
       if (closed) return;
       mount(status, problem(`No se pudo consultar la exportación: ${reason(err)}`));
@@ -106,8 +141,7 @@ export function openExportDialog({ caseId, caseName, audits, user, seq = null })
       mount(status, finished(row));
       return;
     }
-    mount(status, problem(row.status === "expired" ? "Este ZIP venció y ya no está disponible: vuelve a exportar."
-      : row.error || "La exportación falló."));
+    mount(status, problem(row.status === "expired" ? EXPIRED : row.error || "La exportación falló."));
     controls(false); // fix the cause, then try again
   }
 

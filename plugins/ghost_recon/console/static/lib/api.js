@@ -1,4 +1,6 @@
 // JSON client for /api/v1: cookie session plus the anti-CSRF header; a 401 sends the user to the login view.
+// `background: true` marks a request the page makes on its own (a poll): it still needs a live session but never
+// keeps one alive, so a tab nobody uses still times out.
 const BASE = "/api/v1";
 let csrf = null;
 
@@ -66,11 +68,12 @@ export async function download(path, query) {
   setTimeout(() => URL.revokeObjectURL(link.href), 60000);
 }
 
-export async function api(path, { method = "GET", body, query } = {}) {
+export async function api(path, { method = "GET", body, query, background = false } = {}) {
   const url = apiUrl(path, query);
   const headers = { Accept: "application/json" };
   if (body !== undefined) headers["Content-Type"] = "application/json";
   if (method !== "GET" && csrf) headers["X-GR-CSRF"] = csrf;
+  if (background) headers["X-GR-Background"] = "1";
   const res = await fetch(url, {
     method, headers, credentials: "same-origin", body: body === undefined ? undefined : JSON.stringify(body),
   });

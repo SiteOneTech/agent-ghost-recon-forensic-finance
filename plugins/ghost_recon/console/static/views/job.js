@@ -181,11 +181,12 @@ export async function render({ params, user, onLeave }) {
     if (atBottom) feed.scrollTop = feed.scrollHeight;
   }
 
-  // Never throws; an older response that lands after a newer one is dropped.
+  // Never throws; an older response that lands after a newer one is dropped. A background read: the stream and the
+  // timer call it, and they must never keep the session alive.
   async function refresh() {
     const token = guard.next();
     try {
-      const fresh = await api(`/jobs/${jobId}`);
+      const fresh = await api(`/jobs/${jobId}`, { background: true });
       if (!guard.isLatest(token)) return;
       job = fresh;
       mount(notice, null);

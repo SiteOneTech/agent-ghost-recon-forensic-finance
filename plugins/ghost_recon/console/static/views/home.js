@@ -20,7 +20,7 @@ export async function render({ user, onLeave }) {
   paint(o);
   const timer = setInterval(async () => {
     try {
-      paint(await api("/system/overview"));
+      paint(await api("/system/overview", { background: true }));
     } catch {
       // keep the last figures on screen; the next refresh retries
     }
