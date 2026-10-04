@@ -179,17 +179,23 @@ class ConsoleStore:
         with self._lock:
             return _d(self.conn.execute(sql, args).fetchone())
 
-    def _insert(self, sql: str, args: tuple) -> int:
+    def _write(self, sql: str, args: tuple) -> sqlite3.Cursor:
         with self._lock:
-            cur = self.conn.execute(sql, args)
-            self.conn.commit()
-            return int(cur.lastrowid)
+            try:
+                cur = self.conn.execute(sql, args)
+                self.conn.commit()
+            except sqlite3.Error:
+                # A failed write (e.g. "database is locked") leaves the implicit transaction open, and every later
+                # read on this connection would see that stale snapshot: a runner would never notice a cancel.
+                self.conn.rollback()
+                raise
+            return cur
+
+    def _insert(self, sql: str, args: tuple) -> int:
+        return int(self._write(sql, args).lastrowid)
 
     def _update(self, sql: str, args: tuple) -> int:
-        with self._lock:
-            cur = self.conn.execute(sql, args)
-            self.conn.commit()
-            return cur.rowcount
+        return self._write(sql, args).rowcount
 
     # ---------------------------------------------------------------- users
     def create_user(self, username: str, password_hash: str, role: str) -> Dict[str, Any]:
@@ -271,13 +277,10 @@ class ConsoleStore:
 
     # ---------------------------------------------------------------- seal-check cache
     def save_seal_check(self, audit_id: str, ok: bool, detail: Dict[str, Any], checked_by: str) -> Dict[str, Any]:
-        with self._lock:
-            self.conn.execute(
-                "INSERT INTO console_seal_checks(audit_id, ok, checked_at, checked_by, detail) VALUES (?,?,?,?,?)"
-                " ON CONFLICT(audit_id) DO UPDATE SET ok=excluded.ok, checked_at=excluded.checked_at,"
-                " checked_by=excluded.checked_by, detail=excluded.detail",
-                (audit_id, 1 if ok else 0, utcnow(), checked_by, _j(detail)))
-            self.conn.commit()
+        self._write("INSERT INTO console_seal_checks(audit_id, ok, checked_at, checked_by, detail) VALUES (?,?,?,?,?)"
+                    " ON CONFLICT(audit_id) DO UPDATE SET ok=excluded.ok, checked_at=excluded.checked_at,"
+                    " checked_by=excluded.checked_by, detail=excluded.detail",
+                    (audit_id, 1 if ok else 0, utcnow(), checked_by, _j(detail)))
         return self.get_seal_check(audit_id)
 
     def get_seal_check(self, audit_id: str) -> Dict[str, Any]:

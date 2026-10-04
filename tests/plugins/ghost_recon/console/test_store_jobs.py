@@ -73,3 +73,22 @@ def test_jobs_are_listed_by_status_and_by_case_or_folder(cstore):
     assert [j["id"] for j in cstore.list_jobs(statuses=ACTIVE_STATUSES)] == [a["id"]]
     both = cstore.list_jobs(case_id="GRC-b", folder="/c/a", oldest_first=True)
     assert [j["id"] for j in both] == [a["id"], b["id"]]
+
+
+def test_a_write_that_hits_a_lock_never_leaves_later_reads_stale(cstore):
+    """A runner that skips a locked progress write must still see a cancel written afterwards by another process."""
+    import sqlite3
+    from plugins.ghost_recon import runtime
+    job = cstore.create_job(command="new-open-case", folder="/c/x", args={}, argv=["x"], launched_by="jean")
+    cstore.update_job(job["id"], status="running")
+    other = runtime.open_connection()
+    cstore.conn.execute("PRAGMA busy_timeout=50")
+    other.execute("UPDATE console_jobs SET phase='swarm' WHERE id=?", (job["id"],))  # holds the write lock
+    with pytest.raises(sqlite3.OperationalError):
+        cstore.update_job(job["id"], expect=("running",), phase="intake")
+    other.commit()
+    assert cstore.get_job(job["id"])["status"] == "running"
+    other.execute("UPDATE console_jobs SET status='cancelled' WHERE id=?", (job["id"],))
+    other.commit()
+    other.close()
+    assert cstore.get_job(job["id"])["status"] == "cancelled"
