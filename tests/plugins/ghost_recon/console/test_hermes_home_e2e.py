@@ -98,6 +98,10 @@ def test_serve_and_its_runner_share_the_profile_database(hermes_home, tmp_path):
             _wait(record.is_file, 60, "the job-end notice")  # sent right after the runner's final write
         finally:
             server.terminate()
-            server.wait(timeout=30)
+            try:
+                server.wait(timeout=30)
+            except subprocess.TimeoutExpired:
+                server.kill()  # never leave a stuck server behind a failed run
+                server.wait(timeout=30)
     sent = json.loads(record.read_text(encoding="utf-8"))
     assert sent[sent.index("--to") + 1] == "telegram" and sent[-1].startswith(f"Ejecución #{job['id']}")
