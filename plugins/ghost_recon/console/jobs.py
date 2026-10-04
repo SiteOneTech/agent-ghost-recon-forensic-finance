@@ -92,7 +92,7 @@ class JobService:
                     raise CommandError(409, "already_active", "Ya hay una ejecución de esta orden activa o en cola "
                                                               f"para esta carpeta (#{job['id']}).")
             if p["notes"]:
-                commands.write_combined_context(p, principal.username, utcnow())
+                commands.write_combined_context(p, principal.username, utcnow(), self.roots())
             case_id = p["case"]["id"] if p["case"] and p["case"]["source"] == "db" else None
             job = self.cstore.create_job(command=p["command"], folder=p["folder"], args=p["args"], argv=p["argv"],
                                          launched_by=principal.username, context_file=p["context_file"] or None,

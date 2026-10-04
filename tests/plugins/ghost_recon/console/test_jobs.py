@@ -203,3 +203,18 @@ def test_an_agent_stamped_after_the_reconcile_snapshot_is_still_stopped(make_job
         for proc in (runner, agent):
             proc.kill()
             proc.wait(timeout=30)
+
+
+@pytest.mark.platforms("posix")
+def test_a_planted_console_symlink_never_sends_the_context_write_outside_the_roots(make_jobs, case_root, gr_env,
+                                                                                   cstore):
+    jobs = make_jobs(runner=sleeper)
+    folder = _folder(case_root, "Caso Enlace")
+    outside = gr_env / "elsewhere"
+    outside.mkdir()
+    (folder / "GhostRecon_Audits").mkdir()
+    (folder / "GhostRecon_Audits" / "_console").symlink_to(outside, target_is_directory=True)
+    with pytest.raises(CommandError) as err:
+        jobs.launch(LaunchRequest("new-open-case", str(folder), notes="nota"), ADMIN)
+    assert err.value.status == 409 and "case_roots" in err.value.message
+    assert list(outside.iterdir()) == [] and cstore.list_jobs() == []  # nothing written, no job created

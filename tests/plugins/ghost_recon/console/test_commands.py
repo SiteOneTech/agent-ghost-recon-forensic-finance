@@ -111,11 +111,11 @@ def test_without_notes_the_original_context_or_nothing_is_passed(plan_for, fresh
     assert p["context_file"] == str(fresh.resolve() / "context.md") and f'"{p["context_file"]}"' in p["query"]
 
 
-def test_combined_context_has_the_literal_original_its_hash_and_signed_notes(plan_for, fresh):
+def test_combined_context_has_the_literal_original_its_hash_and_signed_notes(plan_for, fresh, case_root):
     original = "Objetivo: conciliar ñ.\n\nLínea 2\n".encode("utf-8")
     (fresh / "context.md").write_bytes(original)
     p = plan_for("new-open-case", fresh, notes="El socio B aportó USD 5 000 en marzo.")
-    path = write_combined_context(p, "jean", "2026-10-03T10:00:00Z")
+    path = write_combined_context(p, "jean", "2026-10-03T10:00:00Z", configured_roots([str(case_root)]))
     text = path.read_bytes().decode("utf-8")
     assert original.decode("utf-8") in text and hashlib.sha256(original).hexdigest() in text
     assert "El socio B aportó USD 5 000 en marzo." in text and "jean" in text and "CRIT-nn" in text
@@ -130,12 +130,12 @@ def test_the_combined_file_name_is_stable_so_the_preview_is_exact(plan_for, fres
     assert a["argv"] == b["argv"] and a["context_file"] != c["context_file"]
 
 
-def test_a_context_md_changed_between_the_plan_and_the_write_is_refused(plan_for, fresh):
+def test_a_context_md_changed_between_the_plan_and_the_write_is_refused(plan_for, fresh, case_root):
     (fresh / "context.md").write_bytes(b"uno\n")
     p = plan_for("new-open-case", fresh, notes="nota")
     (fresh / "context.md").write_bytes(b"dos\n")
     with pytest.raises(CommandError) as err:
-        write_combined_context(p, "jean", "2026-10-03T10:00:00Z")
+        write_combined_context(p, "jean", "2026-10-03T10:00:00Z", configured_roots([str(case_root)]))
     assert (err.value.status, err.value.code) == (409, "context_changed")
 
 

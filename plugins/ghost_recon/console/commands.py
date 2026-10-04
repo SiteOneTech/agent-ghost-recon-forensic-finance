@@ -227,9 +227,13 @@ def combined_context_text(plan_: Dict[str, Any], username: str, now: str) -> str
             f"no como hecho.\n\n{plan_['notes']}\n")
 
 
-def write_combined_context(plan_: Dict[str, Any], username: str, now: str) -> Path:
-    """Write the combined context where ``plan`` said (``<results>/_console/``), as exact UTF-8 bytes."""
-    path = Path(plan_["context_file"])
+def write_combined_context(plan_: Dict[str, Any], username: str, now: str, roots: Sequence[Path]) -> Path:
+    """Write the combined context where ``plan`` said (``<results>/_console/``), as exact UTF-8 bytes. The final
+    path is resolved first: a planted ``_console`` symlink must not send the write outside the roots."""
+    path = resolve_within(plan_["context_file"], roots, strict=False)
+    if path is None:
+        raise CommandError(409, "results_outside_roots", "el archivo de contexto quedaría fuera de las carpetas de "
+                           "casos (case_roots); no se escribió nada")
     text = combined_context_text(plan_, username, now)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(text.encode("utf-8"))
