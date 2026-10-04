@@ -8,8 +8,9 @@ PATH: ``hermes_cli._launchers`` builds the command bound to the running installa
 from __future__ import annotations
 
 import importlib.util
+import subprocess
 from pathlib import Path
-from typing import List, Sequence
+from typing import Any, Dict, List, Optional, Sequence
 
 RUNNER_MODULE = "plugins.ghost_recon.console.job_runner"
 
@@ -45,3 +46,91 @@ def profile_args() -> List[str]:
     from hermes_constants import get_hermes_home, profile_name_for_home
     name = profile_name_for_home(get_hermes_home())
     return ["-p", name] if name else []
+
+
+_IDENTITY_TOLERANCE_S = 0.01
+
+
+def child_env() -> Dict[str, str]:
+    """Environment of the runner and the agent: the served profile's, with its credentials (root AGENTS.md: child
+    spawns use ``served_profile_child_env``, never ``os.environ.copy()``)."""
+    from tools.environments.local import served_profile_child_env
+    return served_profile_child_env(inherit_credentials=True)
+
+
+def spawn_detached(argv: Sequence[str], *, cwd: Any, env: Dict[str, str], stdout: Any = subprocess.DEVNULL,
+                   stderr: Any = subprocess.DEVNULL) -> subprocess.Popen:
+    """Start ``argv`` detached from the console's session/console, so stopping the server never takes it down.
+    The only per-OS branch of the job engine, and it is Hermes': a new session on POSIX; a new process group, hidden
+    console and job breakaway on Windows, retried without breakaway when a job object forbids it."""
+    from hermes_cli._subprocess_compat import (IS_WINDOWS, windows_detach_flags_without_breakaway,
+                                               windows_detach_popen_kwargs)
+    common = {"cwd": str(cwd), "env": env, "stdin": subprocess.DEVNULL, "stdout": stdout, "stderr": stderr,
+              "close_fds": True}
+    try:
+        return subprocess.Popen(list(argv), **common, **windows_detach_popen_kwargs())
+    except PermissionError:
+        if not IS_WINDOWS:
+            raise
+        return subprocess.Popen(list(argv), **common, creationflags=windows_detach_flags_without_breakaway())
+
+
+def identity(pid: Any) -> Optional[float]:
+    """The process create time, stored beside a PID as its fingerprint; None when the process is gone."""
+    import psutil
+    try:
+        return psutil.Process(int(pid)).create_time()
+    except (psutil.Error, TypeError, ValueError):
+        return None
+
+
+def _matching(pid: Any, started: Any):
+    import psutil
+    if not pid:
+        return None
+    try:
+        proc = psutil.Process(int(pid))
+        if started is not None and abs(proc.create_time() - float(started)) > _IDENTITY_TOLERANCE_S:
+            return None
+    except (psutil.Error, TypeError, ValueError):
+        return None
+    try:
+        if proc.status() == psutil.STATUS_ZOMBIE:
+            return None
+    except psutil.AccessDenied:
+        pass
+    except psutil.Error:
+        return None
+    return proc
+
+
+def alive(pid: Any, started: Any) -> bool:
+    """True while the process that had ``pid`` at ``started`` still runs. A zombie (a dead child nobody has waited
+    for yet) and a recycled PID both count as dead."""
+    return _matching(pid, started) is not None
+
+
+def kill_tree(pid: Any, started: Any, *, timeout: float = 10.0) -> bool:
+    """Terminate the process and every descendant, snapshotting the tree first so reparented grandchildren are
+    included; escalate to kill after half the timeout. False when the identity does not match (nothing signalled)."""
+    import psutil
+    root = _matching(pid, started)
+    if root is None:
+        return False
+    try:
+        tree = root.children(recursive=True) + [root]
+    except psutil.Error:
+        tree = [root]
+    for proc in tree:
+        try:
+            proc.terminate()
+        except psutil.Error:
+            pass
+    _gone, survivors = psutil.wait_procs(tree, timeout=timeout / 2)
+    for proc in survivors:
+        try:
+            proc.kill()
+        except psutil.Error:
+            pass
+    psutil.wait_procs(survivors, timeout=timeout / 2)
+    return True

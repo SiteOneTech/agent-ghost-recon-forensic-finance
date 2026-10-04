@@ -1,5 +1,8 @@
 """Fixtures for the console tests (they build on tests/plugins/ghost_recon/conftest.py: gr_env, store)."""
+import json
 import shutil
+import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -8,6 +11,7 @@ from plugins.ghost_recon.console.settings import ConsoleSettings
 
 REPO = Path(__file__).resolve().parents[4]
 DEMO = REPO / "ghost-recon" / "demo" / "demo-case"
+FAKE_AGENT = REPO / "ghost-recon" / "demo" / "fake_agent.py"
 
 ADMIN = ("jean", "admin-pass-123")
 VIEWER = ("vera", "viewer-pass-123")
@@ -122,3 +126,41 @@ def seeded(store, demo_case):
     pack.build_pack(store, a2["audit"]["id"], formats=["md"])
     return {"case_id": case_id, "a1": a1_id, "a2": a2["audit"]["id"], "a1_folder": Path(a1["folder"]),
             "a2_folder": a2_folder, "root": demo_case}
+
+
+@pytest.fixture
+def wait_until():
+    """Poll ``predicate`` until it returns something truthy (returned) or fail after ``timeout`` seconds."""
+    def _wait(predicate, timeout=30.0, interval=0.05, message="condition"):
+        deadline = time.monotonic() + timeout
+        while True:
+            value = predicate()
+            if value:
+                return value
+            assert time.monotonic() < deadline, f"timed out after {timeout} s waiting for {message}"
+            time.sleep(interval)
+    return _wait
+
+
+@pytest.fixture
+def fake_agent(tmp_path):
+    """Factory: writes a fake-agent config and returns the ``hermes_command`` that runs the fake with it."""
+    made = []
+
+    def _make(default=None, folders=None):
+        config = tmp_path / f"fake-agent-{len(made)}.json"
+        config.write_text(json.dumps({"default": default or {}, "folders": folders or {}}), encoding="utf-8")
+        made.append(config)
+        return lambda args: [sys.executable, str(FAKE_AGENT), "--fake-config", str(config), *args]
+    return _make
+
+
+@pytest.fixture
+def module_runner():
+    """Factory: the runner as ``python -m`` from the repo root (the production launcher form is covered by
+    test_runner.py::test_runner_entry_point_runs_through_this_installation_launcher)."""
+    from plugins.ghost_recon.console.procs import RUNNER_MODULE
+
+    def _make(poll=0.05):
+        return lambda job_id: [sys.executable, "-m", RUNNER_MODULE, str(job_id), "--poll", str(poll)]
+    return _make
