@@ -164,3 +164,26 @@ def module_runner():
     def _make(poll=0.05):
         return lambda job_id: [sys.executable, "-m", RUNNER_MODULE, str(job_id), "--poll", str(poll)]
     return _make
+
+
+@pytest.fixture
+def make_jobs(cstore, store, settings, fake_agent, module_runner):
+    """Factory: a JobService over the test DB with the fake agent and the ``python -m`` runner, no background thread.
+    Teardown stops every process tree a test left running."""
+    from plugins.ghost_recon.console import procs
+    from plugins.ghost_recon.console.jobs import JobService
+    from plugins.ghost_recon.console.store import ACTIVE_STATUSES
+    made = []
+
+    def _make(*, hermes=None, runner=None, config=None):
+        service = JobService(cstore, store, config or settings, hermes_command=hermes or fake_agent(),
+                             runner_command=runner or module_runner(), tick_seconds=0, stream_poll=0.05)
+        made.append(service)
+        return service
+
+    yield _make
+    for service in made:
+        service.stop()
+    for job in cstore.list_jobs(statuses=ACTIVE_STATUSES):
+        procs.kill_tree(job["runner_pid"], job["runner_started"])
+        procs.kill_tree(job["pid"], job["pid_started"])
