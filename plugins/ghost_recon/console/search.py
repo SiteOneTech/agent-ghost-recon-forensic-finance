@@ -9,7 +9,7 @@ import time
 from typing import Any, Callable, Dict, Iterator, Sequence
 
 from ..core.db import Store
-from .readmodel import EVIDENCE_TEXT_FIELDS, FINDING_TEXT_FIELDS
+from .readmodel import EVIDENCE_TEXT_FIELDS, FINDING_TEXT_FIELDS, matches
 
 TYPES = ("case", "finding", "evidence", "criteria")
 MIN_QUERY, MAX_QUERY = 2, 100
@@ -20,37 +20,33 @@ CRITERIA_TEXT_FIELDS = ("id", "text", "author")
 TITLE_MAX = 160
 
 
-def _hit(row: Dict[str, Any], needle: str, fields: Sequence[str]) -> bool:
-    return any(needle in str(row.get(k) or "").lower() for k in fields)
-
-
 def _short(text: str) -> str:
     text = " ".join(str(text or "").split())
     return text if len(text) <= TITLE_MAX else text[:TITLE_MAX - 1] + "…"
 
 
 def _cases(store: Store, case: Dict[str, Any], needle: str) -> Iterator[Dict[str, Any]]:
-    if _hit(case, needle, CASE_TEXT_FIELDS):
+    if matches(case, needle, CASE_TEXT_FIELDS):
         yield {"id": case["id"], "title": case["name"], "detail": case["root_path"], "tab": "summary"}
 
 
 def _findings(store: Store, case: Dict[str, Any], needle: str) -> Iterator[Dict[str, Any]]:
     for f in store.list_findings(case["id"]):
-        if _hit(f, needle, FINDING_TEXT_FIELDS):
+        if matches(f, needle, FINDING_TEXT_FIELDS):
             yield {"id": f["id"], "title": _short(f["title"]), "detail": f"{f['kind']} · {f['risk']} · {f['status']}",
                    "tab": "findings"}
 
 
 def _evidence(store: Store, case: Dict[str, Any], needle: str) -> Iterator[Dict[str, Any]]:
     for e in store.list_evidence(case["id"]):
-        if _hit(e, needle, EVIDENCE_TEXT_FIELDS):
+        if matches(e, needle, EVIDENCE_TEXT_FIELDS):
             yield {"id": e["sha256"], "title": e["path"], "detail": f"{e['status']} · SHA-256 {e['sha256'][:12]}…",
                    "tab": "evidence"}
 
 
 def _criteria(store: Store, case: Dict[str, Any], needle: str) -> Iterator[Dict[str, Any]]:
     for c in store.list_criteria(case["id"]):
-        if _hit(c, needle, CRITERIA_TEXT_FIELDS):
+        if matches(c, needle, CRITERIA_TEXT_FIELDS):
             yield {"id": c["id"], "title": _short(c["text"]), "detail": c["author"], "tab": "criteria"}
 
 

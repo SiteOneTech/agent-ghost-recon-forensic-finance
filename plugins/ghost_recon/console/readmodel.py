@@ -119,7 +119,8 @@ def case_detail(store: Store, cstore: ConsoleStore, case: Dict[str, Any]) -> Dic
             "research_notes": len(store.list_research_notes(case["id"]))}
 
 
-def _matches(row: Dict[str, Any], needle: str, fields: Tuple[str, ...]) -> bool:
+def matches(row: Dict[str, Any], needle: str, fields: Tuple[str, ...]) -> bool:
+    """``needle`` (already lowercased) is a substring of any of the row's ``fields``."""
     return any(needle in str(row.get(k) or "").lower() for k in fields)
 
 
@@ -127,12 +128,12 @@ def filter_findings(rows: List[Dict[str, Any]], *, kind: str = "", risk: str = "
                     q: str = "") -> List[Dict[str, Any]]:
     needle = q.strip().lower()
     return [f for f in rows if (not kind or f["kind"] == kind) and (not risk or f["risk"] == risk)
-            and (not status or f["status"] == status) and (not needle or _matches(f, needle, FINDING_TEXT_FIELDS))]
+            and (not status or f["status"] == status) and (not needle or matches(f, needle, FINDING_TEXT_FIELDS))]
 
 
 def filter_evidence(rows: List[Dict[str, Any]], *, q: str = "") -> List[Dict[str, Any]]:
     needle = q.strip().lower()
-    return [e for e in rows if not needle or _matches(e, needle, EVIDENCE_TEXT_FIELDS)]
+    return [e for e in rows if not needle or matches(e, needle, EVIDENCE_TEXT_FIELDS)]
 
 
 @dataclass(frozen=True)

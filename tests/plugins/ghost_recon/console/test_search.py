@@ -67,13 +67,17 @@ def test_search_is_bounded_and_behind_the_login(client, login_as, two_cases):
     assert all(len(hits) <= 1 for hits in one["items"].values()) and one["more"]["evidence"] is True
     for params in ({"q": "a"}, {"q": "  "}, {"q": "x" * 101}, {"q": "extracto", "limit": 51},
                    {"q": "extracto", "types": "finding,passwords"}):
-        assert c.get("/api/v1/search", params=params).status_code == 422
+        r = c.get("/api/v1/search", params=params)
+        assert r.status_code == 422 and "code" in r.json()["error"], params
 
 
 def test_the_scan_stops_at_its_time_budget(store, two_cases):
-    ticks = iter(range(0, 1000, 5))  # every call: five more seconds
-    result = search_mod.search(store, "extracto", clock=lambda: float(next(ticks)))
-    assert result["timed_out"] is True and len({h["case_id"] for h in result["items"]["evidence"]}) <= 1
+    first = store.list_cases()[0]["id"]
+    calls = iter([0.0, 0.0])  # deadline and the first case's check are inside the budget; everything after is past it
+    result = search_mod.search(store, "extracto", clock=lambda: next(calls, 1000.0))
+    assert result["timed_out"] is True
+    hits = {h["case_id"] for h in result["items"]["evidence"]}
+    assert hits == {first}  # the first case was scanned, the second never was
 
 
 def test_cases_filter_by_open_risk(login_as, two_cases):
