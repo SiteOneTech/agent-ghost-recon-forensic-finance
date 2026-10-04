@@ -1,7 +1,7 @@
 import { api } from "../../lib/api.js";
 import { h, mount } from "../../lib/dom.js";
 import { fmtAmount, fmtDate, riskChip } from "../../lib/format.js";
-import { dataTable, debounce, errorState, toggleDetail } from "../components.js";
+import { dataTable, debounce, errorState, tableExport, toggleDetail } from "../components.js";
 
 function select(name, options, selected) {
   return h("select", { "aria-label": name }, options.map(([value, text]) => h("option", { value, selected: value === selected }, text)));
@@ -37,10 +37,10 @@ export async function render({ caseId }) {
     ["downgraded", "Degradados"], ["upgraded", "Elevados"], ["superseded", "Sustituidos"]], "open");
   const q = h("input", { type: "search", placeholder: "Buscar por ID, título, contraparte…", "aria-label": "Buscar hallazgos" });
   const box = h("div");
+  const filters = () => ({ kind: kind.value, risk: risk.value, status: status.value, q: q.value });
   async function load() {
     try {
-      const data = await api(`/cases/${encodeURIComponent(caseId)}/findings`,
-        { query: { kind: kind.value, risk: risk.value, status: status.value, q: q.value } });
+      const data = await api(`/cases/${encodeURIComponent(caseId)}/findings`, { query: filters() });
       mount(box, dataTable([
         { title: "ID", cell: (f) => h("strong", { class: "mono" }, f.id) },
         { title: "Título", cell: (f) => f.title },
@@ -58,5 +58,6 @@ export async function render({ caseId }) {
   for (const el of [kind, risk, status]) el.addEventListener("change", load);
   q.addEventListener("input", debounce(load, 250));
   await load();
-  return h("section", { class: "card" }, h("div", { class: "filters" }, kind, risk, status, q), box);
+  return h("section", { class: "card" }, h("div", { class: "filters" }, kind, risk, status, q),
+    tableExport(caseId, "findings", filters), box);
 }

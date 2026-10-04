@@ -1,7 +1,7 @@
 import { api } from "../../lib/api.js";
 import { h, mount } from "../../lib/dom.js";
 import { chip, fmtBytes, shortHash } from "../../lib/format.js";
-import { dataTable, debounce, errorState } from "../components.js";
+import { dataTable, debounce, errorState, tableExport } from "../components.js";
 
 const PAGE = 100;
 
@@ -14,6 +14,7 @@ export async function render({ caseId, detail }) {
   const q = h("input", { type: "search", placeholder: "Buscar por ruta, nombre o hash…", "aria-label": "Buscar evidencia" });
   const box = h("div");
   const more = h("button", { class: "btn ghost", type: "button", hidden: true }, "Cargar más");
+  const filters = () => ({ status: status.value, audit: audit.value, q: q.value });
   let rows = [];
   let cursor = null;
   const columns = [
@@ -33,7 +34,7 @@ export async function render({ caseId, detail }) {
         cursor = null;
       }
       const data = await api(`/cases/${encodeURIComponent(caseId)}/evidence`,
-        { query: { status: status.value, audit: audit.value, q: q.value, limit: PAGE, cursor } });
+        { query: { ...filters(), limit: PAGE, cursor } });
       rows = rows.concat(data.items);
       cursor = data.next_cursor;
       mount(box, h("p", { class: "muted" }, `${rows.length} de ${data.total} archivos`),
@@ -52,5 +53,5 @@ export async function render({ caseId, detail }) {
   await load(true);
   return h("section", { class: "card" },
     h("div", { class: "chips" }, Object.entries(stats.blocks).map(([k, v]) => chip(`${k}: ${v}`, "muted"))),
-    h("div", { class: "filters" }, status, audit, q), box, more);
+    h("div", { class: "filters" }, status, audit, q), tableExport(caseId, "evidence", filters), box, more);
 }

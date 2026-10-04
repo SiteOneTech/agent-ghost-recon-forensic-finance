@@ -80,7 +80,21 @@ export function sealCheckChip(audit) {
   const check = audit.seal_check;
   if (!check) return chip("sin verificar", "info");
   const title = `verificado ${fmtDate(check.checked_at)} por ${check.checked_by || "—"}`;
-  return check.ok ? chip("sello OK", "ok", title) : chip("sello alterado", "risk-high", title);
+  return h("span", { class: "seal-check" },
+    check.ok ? chip("sello OK", "ok", title) : chip("sello alterado", "risk-high", title),
+    h("small", { class: "muted", title }, `verificado ${fmtAgo(check.checked_at)}`));
+}
+
+/** Relative time in Spanish: "hace un momento", "hace 5 min", "hace 3 h", "hace 2 días". */
+export function fmtAgo(iso) {
+  const seconds = secondsSince(iso);
+  if (seconds === null) return "—";
+  if (seconds < 60) return "hace un momento";
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `hace ${minutes} min`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 48) return `hace ${hours} h`;
+  return `hace ${Math.floor(hours / 24)} días`;
 }
 
 export function shortHash(sha) {

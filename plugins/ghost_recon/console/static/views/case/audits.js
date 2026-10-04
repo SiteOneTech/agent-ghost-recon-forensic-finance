@@ -1,7 +1,7 @@
-import { api, downloadUrl } from "../../lib/api.js";
+import { api } from "../../lib/api.js";
 import { h } from "../../lib/dom.js";
 import { chip, fmtBytes, fmtDate, label, sealCheckChip, shortHash } from "../../lib/format.js";
-import { dataTable, toggleDetail } from "../components.js";
+import { dataTable, downloadButton, toggleDetail } from "../components.js";
 
 const CHECK_LABEL = {
   manifest: "manifiesto", evidence_register: "registro de evidencia", model_json: "model.json", report_md: "informe MD",
@@ -31,8 +31,9 @@ async function auditDetail(caseId, audit, user) {
     broken ? h("p", { class: "error" }, sealProblem(broken)) : null,
     h("h3", {}, "Entregables"),
     dataTable([
+      // A sealed audit's deliverable is re-hashed on download; a changed file is refused here, by name.
       { title: "Archivo", cell: (r) => (canDownload
-        ? h("a", { href: downloadUrl(`${base}/reports/${r.id}/download`), download: r.name }, r.name) : r.name) },
+        ? downloadButton(r.name, `${base}/reports/${r.id}/download`, { title: "Descargar" }) : r.name) },
       { title: "Tipo", cell: (r) => `${r.kind} · ${r.format} · ${r.version}` },
       { title: "Tamaño", class: "num", cell: (r) => fmtBytes(r.size) },
       { title: "SHA-256", cell: (r) => h("span", { class: "mono", title: r.sha256 }, shortHash(r.sha256)) },
