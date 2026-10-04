@@ -59,9 +59,23 @@ def users(auth):
 
 
 @pytest.fixture
-def app(store, cstore, settings, auth):
+def argv_record(tmp_path):
+    """Where the default test app's fake agent writes the argv it received (the last run wins)."""
+    return tmp_path / "argv.json"
+
+
+@pytest.fixture
+def jobs(make_jobs, fake_agent, argv_record):
+    """JobService of the default test app: the fake agent finishes in a fraction of a second, except in a folder
+    named ``hang-case``, where it hangs until it is killed."""
+    return make_jobs(hermes=fake_agent({"steps": 3, "delay": 0.05, "record_argv": str(argv_record)},
+                                       {"hang-case": {"hang": True}}))
+
+
+@pytest.fixture
+def app(store, cstore, settings, auth, jobs):
     from plugins.ghost_recon.console.app import create_app
-    return create_app(settings, store, cstore, auth=auth)
+    return create_app(settings, store, cstore, auth=auth, jobs=jobs)
 
 
 @pytest.fixture
@@ -72,12 +86,12 @@ def client(app):
 
 
 @pytest.fixture
-def login_as(app, users):
-    """Factory: a logged-in TestClient for 'admin' or 'viewer', with its CSRF header preset."""
+def login_on(users):
+    """Factory: a logged-in TestClient on any app (tests build their own for custom settings), CSRF header preset."""
     from fastapi.testclient import TestClient
     opened = []
 
-    def _login(role: str):
+    def _login(app, role: str = "admin"):
         c = TestClient(app, base_url="http://localhost")
         c.__enter__()
         opened.append(c)
@@ -90,6 +104,12 @@ def login_as(app, users):
     yield _login
     for c in opened:
         c.__exit__(None, None, None)
+
+
+@pytest.fixture
+def login_as(app, login_on):
+    """Factory: a logged-in TestClient for 'admin' or 'viewer' on the default test app."""
+    return lambda role: login_on(app, role)
 
 
 def _seal_with_md_pack(store, audit_id, folder: Path, report_md: str) -> None:

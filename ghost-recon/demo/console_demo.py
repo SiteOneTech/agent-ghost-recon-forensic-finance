@@ -1,16 +1,20 @@
 #!/usr/bin/env python3
-"""Ghost Recon console demo: seeds an isolated DB with the demo case and starts the console (no LLM, no Hermes).
+"""Ghost Recon console demo: seeds an isolated DB and case root and starts the console (no LLM, no Hermes keys).
 
     python ghost-recon/demo/console_demo.py [--port 9230]
 
-Copies demo/demo-case to a temp folder, builds a sealed A01 (md pack, findings, a criterion) and an open A02,
-creates the admin ``demo`` / ``demo-pass-123`` and the viewer ``visor`` / ``visor-pass-123``, and serves the
-console on http://localhost:<port>. Use it to try the UI and for H4 acceptance rehearsals.
+Copies demo/demo-case twice into a temporary case root (``case_roots``): "Acme Importaciones" gets a sealed A01 (md
+pack, findings, a criterion) and an open A02; "Logística Norte" stays unaudited for the "+ Nueva auditoría" wizard.
+Creates the admin ``demo`` / ``demo-pass-123`` and the viewer ``visor`` / ``visor-pass-123`` and serves the console on
+http://localhost:<port>. Jobs launched from the UI run the real job runner with ``fake_agent.py`` instead of Hermes:
+they emit the real stream-json shapes, take about ten seconds and succeed. Use it to try the UI and for H4 acceptance
+rehearsals.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shutil
 import sys
@@ -19,6 +23,8 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO))
+DEMO = REPO / "ghost-recon" / "demo" / "demo-case"
+FAKE_AGENT = REPO / "ghost-recon" / "demo" / "fake_agent.py"
 
 
 def main() -> int:
@@ -32,13 +38,17 @@ def main() -> int:
     from plugins.ghost_recon import runtime
     from plugins.ghost_recon.console.app import create_app
     from plugins.ghost_recon.console.auth import AuthService
+    from plugins.ghost_recon.console.jobs import JobService
+    from plugins.ghost_recon.console.procs import RUNNER_MODULE
     from plugins.ghost_recon.console.settings import ConsoleSettings
     from plugins.ghost_recon.console.store import ConsoleStore
     from plugins.ghost_recon.core import casefolder as cf, service
     from plugins.ghost_recon.core.reports import pack
 
-    case_dir = tmp / "Acme Importaciones"
-    shutil.copytree(REPO / "ghost-recon" / "demo" / "demo-case", case_dir)
+    case_root = tmp / "Casos"
+    case_dir = case_root / "Acme Importaciones"
+    shutil.copytree(DEMO, case_dir)
+    shutil.copytree(DEMO, case_root / "Logística Norte")
     store = runtime.store()
     case_id = service.open_case(store, str(case_dir), name="Acme Importaciones")["case"]["id"]
     a1 = service.start_audit(store, case_id, "initial")
@@ -62,14 +72,21 @@ def main() -> int:
     (case_dir / "Bancos" / "extracto_2026-03.txt").write_text("2026-03-02;ZELLE;Socio B;-1500.00\n", encoding="utf-8")
     service.start_audit(store, case_id, "rerun")
 
-    settings = ConsoleSettings(port=args.port)
+    settings = ConsoleSettings(port=args.port, case_roots=(str(case_root),))
     cstore = ConsoleStore.open_default()
     auth = AuthService(cstore, settings)
     auth.add_user("demo", "demo-pass-123", "admin")
     auth.add_user("visor", "visor-pass-123", "viewer")
+    config = tmp / "fake_agent.json"
+    config.write_text(json.dumps({"default": {"steps": 20, "delay": 0.5}}), encoding="utf-8")
+    jobs = JobService(cstore, store, settings,
+                      hermes_command=lambda a: [sys.executable, str(FAKE_AGENT), "--fake-config", str(config), *a],
+                      runner_command=lambda job_id: [sys.executable, "-m", RUNNER_MODULE, str(job_id)])
     print(f"Consola demo en http://localhost:{args.port}\n  admin:  demo / demo-pass-123\n"
-          f"  viewer: visor / visor-pass-123\n  datos:  {tmp}", flush=True)
-    uvicorn.run(create_app(settings, store, cstore, auth=auth), host="127.0.0.1", port=args.port, log_level="warning")
+          f"  viewer: visor / visor-pass-123\n  casos:  {case_root}\n"
+          "  las ejecuciones usan un agente simulado (sin LLM)", flush=True)
+    uvicorn.run(create_app(settings, store, cstore, auth=auth, jobs=jobs), host="127.0.0.1", port=args.port,
+                log_level="warning")
     return 0
 
 
