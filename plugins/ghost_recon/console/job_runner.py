@@ -60,12 +60,14 @@ class Runner:
 
     def _is_mine(self, job: Dict[str, Any]) -> bool:
         """The one "is this job mine" decision. The claim accepts ``running`` because the launcher flips the row to
-        running (stamping ``runner_pid``) right after spawning us, possibly before we start; a ``running`` row
-        stamped with another runner's PID belongs to that runner, and a second agent must never start for it."""
+        running (stamping ``runner_pid`` with the PID it spawned) right after spawning us, possibly before we start.
+        That PID is ours or our parent's: one launcher hop sits in between (a venv ``python.exe`` redirector on
+        Windows, an exec wrapper on POSIX). A ``running`` row stamped with any other PID belongs to another runner,
+        and a second agent must never start for it."""
         if not job or job["status"] not in ACTIVE_STATUSES:
             return False
         owner = job.get("runner_pid")
-        return not (job["status"] == "running" and owner and int(owner) != os.getpid())
+        return not (job["status"] == "running" and owner and int(owner) not in (os.getpid(), os.getppid()))
 
     def run(self) -> str:
         job = self.cstore.get_job(self.job_id)

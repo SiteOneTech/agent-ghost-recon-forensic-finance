@@ -13,6 +13,7 @@ from plugins.ghost_recon.console.commands import agent_args
 from plugins.ghost_recon.console.events import Normalizer
 from plugins.ghost_recon.console.job_runner import SELF_CHECK, Runner
 from plugins.ghost_recon.console.procs import RUNNER_MODULE
+from plugins.ghost_recon.console.store import ACTIVE_STATUSES
 
 
 @pytest.fixture
@@ -115,11 +116,34 @@ def test_a_cancel_between_agent_exit_and_the_final_write_stays_cancelled(
 
 def test_a_job_running_under_another_runner_is_left_alone(cstore, store, evidence, fake_agent):
     job = _job(cstore, evidence, fake_agent())
-    assert cstore.update_job(job["id"], status="running", runner_pid=os.getpid() + 100000)
+    assert cstore.update_job(job["id"], status="running", runner_pid=max(os.getpid(), os.getppid()) + 100000)
     before = cstore.get_job(job["id"])
     assert _run(cstore, store, job["id"]) == "running"
     assert cstore.get_job(job["id"]) == before
     assert not jobfiles.raw_path(jobfiles.jobs_dir(), job["id"]).exists()
+
+
+def test_the_runner_recognises_its_job_through_one_launcher_hop(cstore, evidence, fake_agent, wait_until):
+    """What JobService does: spawn the runner, then stamp the row running with the PID it spawned. On Windows in a venv
+    that PID is the ``python.exe`` redirector, the runner's parent; on POSIX the exec wrapper keeps the PIDs equal."""
+    job = _job(cstore, evidence, fake_agent())
+    launcher = procs.spawn_detached([sys.executable, "-m", RUNNER_MODULE, str(job["id"]), "--poll", "0.05"],
+                                    cwd=procs.hermes_root(), env=procs.child_env())
+    try:
+        assert cstore.update_job(job["id"], expect=ACTIVE_STATUSES, status="running", runner_pid=launcher.pid,
+                                 runner_started=procs.identity(launcher.pid))
+        wait_until(lambda: cstore.get_job(job["id"])["status"] != "running", message="the job to finish")
+        assert cstore.get_job(job["id"])["status"] == "succeeded"
+    finally:
+        procs.kill_tree(launcher.pid, procs.identity(launcher.pid))
+        launcher.wait(timeout=30)
+
+
+def test_a_row_stamped_with_the_parent_pid_is_the_runners_own(cstore, store, evidence, fake_agent, monkeypatch):
+    job = _job(cstore, evidence, fake_agent())
+    monkeypatch.setattr(job_runner.os, "getppid", lambda: os.getpid() + 100001)  # the launcher hop, whatever it is
+    assert cstore.update_job(job["id"], status="running", runner_pid=os.getpid() + 100001)
+    assert _run(cstore, store, job["id"]) == "succeeded"
 
 
 def test_an_unexpected_runner_error_kills_the_agent_and_fails_the_job(
