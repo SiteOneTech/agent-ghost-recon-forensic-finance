@@ -27,6 +27,11 @@ logger = logging.getLogger(__name__)
 INTERRUPTED = "La exportación se interrumpió porque la consola se reinició: vuelve a exportar."
 INTERNAL = "Error interno al construir el ZIP; el detalle quedó en el log del servidor."
 PROGRESS_EVERY_S = 0.5
+STOP_JOIN_S = 30.0
+
+
+class _Halted(Exception):
+    """Raised from the progress callback to abort the build in flight when the service stops."""
 
 
 class ExportService:
@@ -38,6 +43,7 @@ class ExportService:
         self.dir = Path(exports_dir) if exports_dir else exporter.exports_dir()
         self._queue: "queue.Queue[Optional[int]]" = queue.Queue()
         self._thread: Optional[threading.Thread] = None
+        self._halt = threading.Event()
 
     # ------------------------------------------------------------------ requests
     def busy(self, case: Dict[str, Any]) -> bool:
@@ -68,9 +74,25 @@ class ExportService:
 
     def file_path(self, row: Dict[str, Any]) -> Optional[Path]:
         """The finished archive of an export, while it is still on disk."""
-        if row.get("status") != "succeeded" or not row.get("file_name"):
+        if row.get("status") != "succeeded":
             return None
-        path = self.dir / row["file_name"]
+        return self._inside(row.get("file_name"))
+
+    def sidecar_path(self, row: Dict[str, Any]) -> Optional[Path]:
+        """The ``.sha256`` beside the finished archive."""
+        archive = self.file_path(row)
+        return self._inside(f"{archive.name}.sha256") if archive else None
+
+    def _inside(self, name: Optional[str]) -> Optional[Path]:
+        """A plain file name that resolves directly inside the exports folder, else None."""
+        if not name or name in (".", "..") or "/" in name or "\\" in name or Path(name).is_absolute():
+            return None
+        path = self.dir / name
+        try:
+            if path.resolve().parent != self.dir.resolve():
+                return None
+        except OSError:
+            return None
         return path if path.is_file() else None
 
     # ------------------------------------------------------------------ building
@@ -83,6 +105,8 @@ class ExportService:
 
         def progress(done: int, total: int) -> None:
             now = time.monotonic()
+            if self._halt.is_set():
+                raise _Halted
             if done == total or now - last[0] >= PROGRESS_EVERY_S:
                 last[0] = now
                 self.cstore.update_export(export_id, expect=("building",), files_done=done, files_total=total)
@@ -94,6 +118,8 @@ class ExportService:
             sel = self.selection(case, scope=row["scope"], seq=row["seq"], include_unsealed=row["include_unsealed"])
             result = exporter.build(self.store, self.cstore, sel, export_id=export_id, exported_by=row["created_by"],
                                     dest_dir=self.dir, progress=progress)
+        except _Halted:
+            self._fail(row, "interrupted", INTERRUPTED, expect=("building",))
         except ExportError as exc:
             self._fail(row, exc.code, exc.message)
         except Exception:
@@ -105,7 +131,7 @@ class ExportService:
 
     def _log(self, action: str, row: Dict[str, Any], detail: Dict[str, Any]) -> None:
         user = self.cstore.get_user(row["created_by"])
-        self.cstore.log(action, user_id=user.get("id"), username=row["created_by"], target=f"export:{row['id']}",
+        self.cstore.log(action, user_id=(user or {}).get("id"), username=row["created_by"], target=f"export:{row['id']}",
                         detail={"case_id": row["case_id"], **detail})
 
     def _succeed(self, row: Dict[str, Any], case: Dict[str, Any], result: Dict[str, Any]) -> None:
@@ -113,9 +139,10 @@ class ExportService:
         files = len(manifest["files"])
         detail = {"audits": [{"seq": a["seq"], "state": a["state"]} for a in manifest["audits"]],
                   "excluded": manifest["excluded"], "skipped": manifest["skipped"], "draft": manifest["draft"]}
-        self.cstore.update_export(row["id"], expect=("building",), status="succeeded", finished_at=utcnow(),
-                                  size=result["size"], sha256=result["sha256"], file_name=result["file_name"],
-                                  files_done=files, files_total=files, detail=detail)
+        if not self.cstore.update_export(row["id"], expect=("building",), status="succeeded", finished_at=utcnow(),
+                                         size=result["size"], sha256=result["sha256"], file_name=result["file_name"],
+                                         files_done=files, files_total=files, detail=detail):
+            return  # a restart verdict already stands; the late result is not recorded
         self._log("export", row, {"scope": row["scope"], "seq": row["seq"], "draft": manifest["draft"],
                                   "file": result["file_name"], "size": result["size"], "sha256": result["sha256"]})
         what = row["seq"] or "caso completo"
@@ -126,9 +153,10 @@ class ExportService:
                              ref={"export_id": row["id"], "file": result["file_name"], "sha256": result["sha256"],
                                   "scope": row["scope"], "seq": row["seq"], "draft": manifest["draft"]})
 
-    def _fail(self, row: Dict[str, Any], code: str, message: str) -> None:
-        self.cstore.update_export(row["id"], expect=EXPORT_PENDING, status="failed", finished_at=utcnow(),
-                                  error=message, detail={"code": code})
+    def _fail(self, row: Dict[str, Any], code: str, message: str, expect=EXPORT_PENDING) -> None:
+        if not self.cstore.update_export(row["id"], expect=expect, status="failed", finished_at=utcnow(),
+                                         error=message, detail={"code": code}):
+            return
         self._log("export_failed", row, {"code": code, "message": message})
 
     # ------------------------------------------------------------------ lifecycle
@@ -146,19 +174,26 @@ class ExportService:
     def start(self) -> None:
         self.recover()
         if self._thread is None:
+            self._halt.clear()
+            while not self._queue.empty():  # leftovers of a previous run: recover() failed those rows
+                self._queue.get_nowait()
             self._thread = threading.Thread(target=self._loop, name="gr-console-exports", daemon=True)
             self._thread.start()
 
     def stop(self) -> None:
+        """Abort the build in flight (its row fails as interrupted, its .part goes) and leave queued ones queued:
+        recover() fails them at the next start."""
         if self._thread is not None:
+            self._halt.set()
             self._queue.put(None)
-            self._thread.join(timeout=5)  # a build still running ends with the process; recover() cleans up
-            self._thread = None
+            self._thread.join(timeout=STOP_JOIN_S)
+            if not self._thread.is_alive():
+                self._thread = None
 
     def _loop(self) -> None:
-        while True:
+        while not self._halt.is_set():
             export_id = self._queue.get()
-            if export_id is None:
+            if export_id is None or self._halt.is_set():
                 return
             try:
                 self.build(export_id)

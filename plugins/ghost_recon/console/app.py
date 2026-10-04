@@ -67,15 +67,19 @@ def create_app(settings: ConsoleSettings, store: Store, cstore: ConsoleStore, *,
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
-        jobs.start()  # find running jobs again, mark orphans, dispatch the queue; then tick in the background
-        exports.start()  # fail the builds a previous server left unfinished; then build in the background
-        housekeeping.start()  # sessions, old ZIPs and old job files: now, then every hour
+        # (start, stop) in start order; whatever began is stopped in reverse, even if a later start fails
+        steps = [(jobs.start, jobs.stop),  # find running jobs again, mark orphans, dispatch the queue
+                 (exports.start, exports.stop),  # fail the builds a previous server left unfinished; then build
+                 (housekeeping.start, housekeeping.stop)]  # sessions, old ZIPs, old job files: now, then hourly
+        began = []
         try:
+            for start, stop in steps:
+                began.append(stop)
+                start()
             yield
         finally:
-            housekeeping.stop()
-            exports.stop()
-            jobs.stop()
+            for stop in reversed(began):
+                stop()
 
     app = FastAPI(title="Ghost Recon Console", version=CONSOLE_VERSION, docs_url=None, redoc_url=None,
                   openapi_url=None, lifespan=lifespan)

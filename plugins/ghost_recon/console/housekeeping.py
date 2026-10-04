@@ -89,7 +89,10 @@ class Housekeeping:
         return pruned
 
     def start(self) -> None:
-        self.run_once()
+        try:
+            self.run_once()
+        except Exception:  # a locked file or a database error in a pass must not abort the console's start-up
+            logger.exception("ghost-recon console: housekeeping pass failed")
         if self.interval_s > 0 and self._thread is None:
             self._stop.clear()
             self._thread = threading.Thread(target=self._loop, name="gr-console-housekeeping", daemon=True)

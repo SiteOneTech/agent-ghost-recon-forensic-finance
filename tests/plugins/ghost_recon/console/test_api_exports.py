@@ -2,8 +2,14 @@
 audits, the preview of what goes in, a broken seal that fails the build, the audit trail, and builds that a server
 restart interrupted."""
 import hashlib
+import threading
+import time
 from dataclasses import replace
 
+import pytest
+
+from plugins.ghost_recon.console import exporter
+from plugins.ghost_recon.console.auth import Principal
 from plugins.ghost_recon.console.exports import ExportService
 
 
@@ -110,3 +116,44 @@ def test_builds_a_restart_interrupted_end_failed_and_leave_no_partial_file(cstor
         row = cstore.get_export(export_id)
         assert row["status"] == "failed" and row["detail"] == {"code": "interrupted"} and "reinici" in row["error"]
     assert list(exports_dir.iterdir()) == []
+
+
+def test_stop_aborts_a_build_in_flight_and_nothing_is_left_behind(cstore, store, settings, seeded, tmp_path,
+                                                                  monkeypatch):
+    """stop() really stops: the running build fails as interrupted, no .part/.zip stays, and no download until done."""
+    exports_dir = tmp_path / "exports"
+    exports_dir.mkdir()
+    packing, real_build = threading.Event(), exporter.build
+
+    def slow_build(*args, progress=None, **kwargs):
+        def slow_progress(done, total):
+            packing.set()
+            time.sleep(1)  # a large archive: the worker is still packing when the server stops
+            progress(done, total)
+        return real_build(*args, progress=slow_progress, **kwargs)
+    monkeypatch.setattr(exporter, "build", slow_build)
+    service = ExportService(cstore, store, settings, exports_dir=exports_dir)
+    service.start()
+    principal = Principal(user_id=1, username="vera", role="viewer", via="session")
+    row = service.request(store.get_case(seeded["case_id"]), scope="case", seq=None, include_unsealed=False,
+                          principal=principal)
+    assert packing.wait(30)
+    assert service.file_path(cstore.get_export(row["id"])) is None  # not finished: nothing to serve
+    started = time.monotonic()
+    service.stop()
+    assert time.monotonic() - started < 25 and service._thread is None
+    done = cstore.get_export(row["id"])
+    assert done["status"] == "failed" and done["detail"] == {"code": "interrupted"} and "reinici" in done["error"]
+    assert list(exports_dir.iterdir()) == []
+
+
+def test_only_plain_names_inside_the_exports_folder_are_served(cstore, store, settings, tmp_path):
+    exports_dir = tmp_path / "exports"
+    exports_dir.mkdir()
+    (tmp_path / "secret.zip").write_bytes(b"x")
+    (exports_dir / "ok.zip").write_bytes(b"x")
+    service = ExportService(cstore, store, settings, exports_dir=exports_dir)
+    served = lambda name: service.file_path({"status": "succeeded", "file_name": name})
+    assert served("ok.zip") == exports_dir / "ok.zip"
+    for bad in ("../secret.zip", "..\secret.zip", str(tmp_path / "secret.zip"), "..", "."):
+        assert served(bad) is None

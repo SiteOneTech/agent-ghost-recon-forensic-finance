@@ -88,8 +88,12 @@ def _finished_file(ctx: ConsoleContext, row: dict):
         raise ApiError(409, "not_ready", "el ZIP todavía se está construyendo")
     path = ctx.exports.file_path(row)
     if path is None:
-        raise ApiError(410, "gone", "este ZIP no está disponible (falló o se eliminó por antigüedad): vuelve a exportar")
+        raise _gone()
     return path
+
+
+def _gone() -> ApiError:
+    return ApiError(410, "gone", "este ZIP no está disponible (falló o se eliminó por antigüedad): vuelve a exportar")
 
 
 @router.get("/exports/{export_id}/download")
@@ -97,6 +101,10 @@ def export_download(export_id: int, request: Request, principal: Principal = Dep
                     ctx: ConsoleContext = Depends(get_ctx)):
     row = _export_or_404(ctx, export_id)
     path = _finished_file(ctx, row)
+    try:
+        path.stat()
+    except OSError as exc:
+        raise _gone() from exc
     ctx.cstore.log("export_download", user_id=principal.user_id, username=principal.username, ip=client_ip(request),
                    target=f"export:{export_id}", detail={"case_id": row["case_id"], "file": row["file_name"]})
     return FileResponse(path, filename=row["file_name"], media_type="application/zip")
@@ -105,9 +113,16 @@ def export_download(export_id: int, request: Request, principal: Principal = Dep
 @router.get("/exports/{export_id}/sha256")
 def export_sidecar(export_id: int, _: Principal = Depends(require("viewer")), ctx: ConsoleContext = Depends(get_ctx)):
     """The ``<zip>.sha256`` beside the archive (``sha256sum -c`` format)."""
-    path = _finished_file(ctx, _export_or_404(ctx, export_id))
-    sidecar = path.with_name(f"{path.name}.sha256")
-    return attachment(sidecar.read_bytes(), sidecar.name, "text/plain; charset=utf-8")
+    row = _export_or_404(ctx, export_id)
+    _finished_file(ctx, row)
+    sidecar = ctx.exports.sidecar_path(row)
+    try:
+        data = sidecar.read_bytes() if sidecar else None
+    except OSError:
+        data = None
+    if data is None:
+        raise _gone()
+    return attachment(data, sidecar.name, "text/plain; charset=utf-8")
 
 
 @router.get("/cases/{case_id}/{table}.{fmt}")
