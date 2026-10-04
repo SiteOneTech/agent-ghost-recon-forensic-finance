@@ -91,6 +91,7 @@ class Runner:
         self.log = jobfiles.log_path(base, job_id)
         self.events = jobfiles.events_path(base, job_id)
         self.work = jobfiles.work_dir(base, job_id)
+        self.runner_log = jobfiles.runner_log_path(base, job_id)
         self.norm = events.Normalizer()
         self.offset = 0
         self.reported: Dict[str, Any] = {}
@@ -220,19 +221,31 @@ class Runner:
         argv = job.get("notify_argv") or []
         if not argv:
             return
-        case = self.store.get_case(case_id) if case_id else {}
-        audits = self.store.list_audits(case_id) if case else []
-        message = notify_message(job, status, case, audits[-1] if audits else None, error)
         try:
-            done = subprocess.run([*argv, message], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                                  stderr=subprocess.STDOUT, cwd=self.work, env=procs.child_env(),
-                                  timeout=NOTIFY_TIMEOUT_S)
-        except (OSError, subprocess.SubprocessError) as exc:
+            case = self.store.get_case(case_id) if case_id else {}
+            audits = self.store.list_audits(case_id) if case else []
+            message = notify_message(job, status, case, audits[-1] if audits else None, error)
+            self._send([*argv, message])
+        except Exception as exc:
             logger.warning("ghost-recon job runner: the job-end notice was not sent: %s", exc)
-            return
-        if done.returncode != 0:
-            logger.warning("ghost-recon job runner: hermes send exited %s: %s", done.returncode,
-                           done.stdout.decode("utf-8", "replace")[-500:])
+
+    def _send(self, argv: List[str]) -> None:
+        """Run the notice with its output in the runner log (never a pipe a surviving grandchild could hold open) and,
+        past ``NOTIFY_TIMEOUT_S``, kill its whole process tree so the runner can always exit."""
+        with open(self.runner_log, "ab") as log:
+            proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=log, stderr=log, cwd=self.work,
+                                    env=procs.child_env())
+            started = procs.identity(proc.pid)
+            try:
+                code = proc.wait(timeout=NOTIFY_TIMEOUT_S)
+            except subprocess.TimeoutExpired:
+                procs.kill_tree(proc.pid, started)
+                proc.wait()
+                logger.warning("ghost-recon job runner: hermes send timed out after %ss and was stopped",
+                               NOTIFY_TIMEOUT_S)
+                return
+        if code != 0:
+            logger.warning("ghost-recon job runner: hermes send exited %s", code)
 
 
 def main(argv: Optional[List[str]] = None) -> int:

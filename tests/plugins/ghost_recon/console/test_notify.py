@@ -2,9 +2,12 @@
 summary when the job ends, an empty target sends nothing, and a failed notice never changes the job."""
 import json
 import logging
+import time
 from dataclasses import replace
 
-from plugins.ghost_recon.console import jobfiles, procs
+import psutil
+
+from plugins.ghost_recon.console import job_runner, jobfiles, procs
 from plugins.ghost_recon.console.auth import Principal
 from plugins.ghost_recon.console.commands import NOTIFY_SUBJECT, LaunchRequest, agent_args, notify_args
 from plugins.ghost_recon.console.job_runner import Runner, notify_message
@@ -83,3 +86,30 @@ def test_operator_text_never_becomes_an_attachment_directive():
     assert message.startswith("Ejecución #7 · Re-run · falló") and "A02 (open)" in message
     no_case = notify_message({**job, "id": 8, "folder": "/casos/MEDIA:informe"}, "succeeded", {}, None, None)
     assert "MEDIA:" not in no_case.upper() and "informe" in no_case  # the folder name, neutralised
+
+
+def _senders(config_marker):
+    return [p for p in psutil.process_iter(["cmdline"]) if config_marker in " ".join(p.info["cmdline"] or [])]
+
+
+def test_a_notice_that_outlives_its_timeout_is_stopped_and_never_hangs_the_runner(
+        cstore, store, case_root, fake_agent, monkeypatch, caplog):
+    monkeypatch.setattr(job_runner, "NOTIFY_TIMEOUT_S", 1)
+    hermes = fake_agent({"send_sleep_s": 60})
+    job = _job(cstore, _folder(case_root, "Caso Lento"), hermes)
+    marker = job["notify_argv"][2]  # the fake-agent config path: identifies its sender process
+    started = time.monotonic()
+    with caplog.at_level(logging.WARNING):
+        assert _run(cstore, store, job["id"]) == "succeeded"
+    assert time.monotonic() - started < 30  # the sender sleeps 60 s: the runner did not wait for it
+    assert "timed out" in caplog.text and cstore.get_job(job["id"])["status"] == "succeeded"
+    assert not [p for p in _senders(marker) if "send" in p.info["cmdline"]]
+
+
+def test_a_store_error_while_building_the_notice_leaves_the_job_alone(cstore, store, case_root, fake_agent, monkeypatch,
+                                                                      caplog):
+    job = _job(cstore, _folder(case_root, "Caso Tienda"), fake_agent())
+    monkeypatch.setattr(store, "list_audits", lambda *_: (_ for _ in ()).throw(RuntimeError("disco lleno")))
+    with caplog.at_level(logging.WARNING):
+        assert _run(cstore, store, job["id"]) == "succeeded"
+    assert "disco lleno" in caplog.text and cstore.get_job(job["id"])["status"] == "succeeded"

@@ -18,7 +18,7 @@ where the full argv is written as JSON), ``record_cwd`` (path where the working 
 
 It also stands in for ``hermes … send --to … --subject … "<message>"`` (the job-end notice): with ``send`` among the
 arguments and no ``-q`` it writes its argv as JSON to the default behaviour's ``record_send`` path and exits with
-``send_exit_code`` (default 0).
+``send_exit_code`` (default 0) after sleeping ``send_sleep_s`` seconds (default 0).
 """
 
 from __future__ import annotations
@@ -67,6 +67,7 @@ def open_case(folder: Path):
 def send(config_path: str) -> int:
     """``hermes send`` stand-in: records its argv and exits with the configured code."""
     cfg = behaviour(config_path, "")
+    time.sleep(float(cfg.get("send_sleep_s", 0)))
     if cfg.get("record_send"):
         Path(cfg["record_send"]).write_text(json.dumps(sys.argv, ensure_ascii=False), encoding="utf-8")
     return int(cfg.get("send_exit_code", 0))
