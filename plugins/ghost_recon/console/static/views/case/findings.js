@@ -1,6 +1,6 @@
 import { api } from "../../lib/api.js";
 import { h, mount } from "../../lib/dom.js";
-import { fmtAmount, fmtDate, riskChip } from "../../lib/format.js";
+import { fmtAmount, fmtDate, label, riskChip } from "../../lib/format.js";
 import { dataTable, debounce, errorState, tableExport, toggleDetail } from "../components.js";
 
 function select(name, options, selected) {
@@ -48,7 +48,7 @@ export async function render({ caseId }) {
         { title: "Riesgo", cell: (f) => riskChip(f.risk) },
         { title: "Confianza", cell: (f) => f.confidence },
         { title: "Etiqueta", cell: (f) => f.label },
-        { title: "Estado", cell: (f) => f.status },
+        { title: "Estado", cell: (f) => label.findingStatus(f.status) },
         { title: "Quién aporta", cell: (f) => f.owner || "—" },
       ], data.items, { empty: "No hay hallazgos con estos filtros.", onRow: (f, tr) => toggleDetail(tr, async () => findingDetail(f)) }));
     } catch (err) {

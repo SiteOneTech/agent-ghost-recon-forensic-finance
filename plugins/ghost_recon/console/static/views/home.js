@@ -1,6 +1,6 @@
 import { api } from "../lib/api.js";
 import { h, mount } from "../lib/dom.js";
-import { fmtDate, riskChips } from "../lib/format.js";
+import { eventLabel, fmtDate, riskChips } from "../lib/format.js";
 import { casesTable, dataTable, emptyState, jobsTable, kpi, newAuditAction } from "./components.js";
 
 export async function render({ user, onLeave }) {
@@ -34,7 +34,7 @@ export async function render({ user, onLeave }) {
     h("section", { class: "card" }, h("h2", {}, "Actividad reciente"), dataTable([
       { title: "Fecha", cell: (e) => fmtDate(e.ts) },
       { title: "Caso", cell: (e) => h("a", { href: `#/cases/${encodeURIComponent(e.case_id)}/timeline` }, e.case_name) },
-      { title: "Evento", cell: (e) => e.event_type },
+      { title: "Evento", cell: (e) => eventLabel(e.event_type) },
       { title: "Descripción", cell: (e) => e.description },
     ], o.recent_events, { empty: "Sin actividad todavía." })));
 }

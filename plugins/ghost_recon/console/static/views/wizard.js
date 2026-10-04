@@ -21,7 +21,7 @@ function caseMark(entry) {
 }
 
 function filesText(entry) {
-  return `${entry.capped ? "más de " : ""}${entry.files} archivos`;
+  return `${entry.capped ? "más de " : ""}${entry.files} ${entry.files === 1 ? "archivo" : "archivos"}`;
 }
 
 function kv(pairs) {

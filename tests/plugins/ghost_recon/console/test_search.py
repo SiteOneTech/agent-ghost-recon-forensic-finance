@@ -30,10 +30,13 @@ def _search(c, **params):
     return r.json()
 
 
-def test_findings_are_found_by_id_and_by_title_across_cases(login_as, two_cases):
+def test_findings_are_found_by_id_and_by_title_across_cases(login_as, store, two_cases):
     c = login_as("viewer")
     by_id = _search(c, q="EXC-01", types="finding")["items"]["finding"]
     assert {(f["case_id"], f["id"]) for f in by_id} == {(two_cases["acme"], "EXC-01"), (two_cases["beta"], "EXC-01")}
+    for hit in by_id:  # the structured meta mirrors the stored finding (the UI labels it, never the English detail)
+        stored = next(f for f in store.list_findings(hit["case_id"]) if f["id"] == hit["id"])
+        assert hit["meta"] == {"kind": stored["kind"], "risk": stored["risk"], "status": stored["status"]}
     by_title = _search(c, q="sin soporte")["items"]["finding"]
     assert [(f["case_id"], f["tab"]) for f in by_title] == [(two_cases["beta"], "findings")]
 

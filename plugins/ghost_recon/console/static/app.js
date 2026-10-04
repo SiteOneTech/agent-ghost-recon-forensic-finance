@@ -98,7 +98,7 @@ function shell(navId) {
       admin ? h("a", { class: "btn", href: "#/new" }, "+ Nueva auditoría")
         : h("button", { class: "btn", disabled: true, title: "Solo los administradores lanzan auditorías." }, "+ Nueva auditoría"),
       h("span", { class: "who" }, `${state.user.username} · ${state.user.role}`),
-      noticeToggle(),
+      noticeToggle(state.user.username),
       h("button", { class: "btn ghost small", onclick: logout }, "Salir")),
     h("nav", { class: "sidebar", "aria-label": "Secciones" }, NAV.map((n) =>
       h("a", { class: n.id === navId ? "nav-item active" : "nav-item", href: n.href, "aria-current": n.id === navId ? "page" : null }, n.label))),
@@ -123,6 +123,7 @@ async function render() {
   const app = document.getElementById("app");
   app.classList.remove("boot");
   if (route.public) {
+    stopWatcher(); // the login view means no session: nothing to watch
     const notice = state.notice;
     state.notice = null;
     const page = await route.view.render({ params, onLogin, notice });
@@ -137,7 +138,7 @@ async function render() {
   }
   const { root, main } = shell(route.nav);
   mount(app, root);
-  startWatcher(); // job-end notices while the console is open (no-op until the operator opts in)
+  startWatcher(state.user.username); // job-end notices while the console is open (no-op until the operator opts in)
   mount(main, h("p", { class: "muted" }, "Cargando…"));
   let page;
   try {

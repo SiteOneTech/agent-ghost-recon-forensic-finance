@@ -2,11 +2,20 @@
 // leaving the box closes the results.
 import { api, ApiError } from "../lib/api.js";
 import { h, mount } from "../lib/dom.js";
+import { label } from "../lib/format.js";
 import { latestGuard } from "../lib/latest.js";
 
 const GROUPS = [["case", "Casos"], ["finding", "Hallazgos"], ["evidence", "Evidencia"], ["criteria", "Criterios"]];
 const LIMIT = 8;
 const WAIT_MS = 250;
+
+// Findings and evidence carry structured `meta`: the labels come from here, not from the English codes.
+function detail(item) {
+  const m = item.meta;
+  if (item.type === "finding" && m) return [label.findingKind(m.kind), label.risk(m.risk), label.findingStatus(m.status)].join(" · ");
+  if (item.type === "evidence" && m) return `${label.evidenceStatus(m.status)} · SHA-256 ${item.id.slice(0, 12)}…`;
+  return item.detail;
+}
 
 function results(data) {
   const groups = GROUPS.filter(([type]) => (data.items[type] || []).length);
@@ -15,7 +24,7 @@ function results(data) {
     groups.map(([type, title]) => h("section", { class: "search-group" }, h("h3", {}, title),
       h("ul", {}, data.items[type].map((item) => h("li", {},
         h("a", { href: `#/cases/${encodeURIComponent(item.case_id)}/${item.tab}` }, item.title),
-        h("small", { class: "muted" }, `${item.case_name} · ${item.detail}`)))),
+        h("small", { class: "muted" }, `${item.case_name} · ${detail(item)}`)))),
       data.more[type] ? h("p", { class: "muted" }, "Hay más resultados: afina la búsqueda.") : null)),
     data.timed_out ? h("p", { class: "muted" }, "La búsqueda se detuvo antes de recorrer todos los casos: afina el texto.") : null,
   ];
@@ -24,7 +33,7 @@ function results(data) {
 export function searchBox() {
   const input = h("input", { class: "search", type: "search", autocomplete: "off", "aria-label": "Buscar entre casos",
     placeholder: "Buscar entre casos: ID, hallazgo, archivo, hash…" });
-  const panel = h("div", { class: "search-panel", hidden: true, role: "region", "aria-label": "Resultados de la búsqueda" });
+  const panel = h("div", { class: "search-panel", hidden: true, tabindex: "-1", role: "region", "aria-label": "Resultados de la búsqueda" });
   const wrap = h("div", { class: "search-wrap" }, input, panel);
   const guard = latestGuard();
   let timer = null;
@@ -62,6 +71,7 @@ export function searchBox() {
       hide();
     }
   });
+  panel.addEventListener("mousedown", (e) => { if (!e.target.closest("a")) e.preventDefault(); }); // keep focus in the box
   input.addEventListener("focus", () => { if (input.value.trim().length >= 2 && panel.childNodes.length) panel.hidden = false; });
   wrap.addEventListener("focusout", (e) => { if (!wrap.contains(e.relatedTarget)) hide(); });
   return wrap;

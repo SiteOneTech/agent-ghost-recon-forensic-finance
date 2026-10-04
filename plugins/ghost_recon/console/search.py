@@ -34,14 +34,14 @@ def _findings(store: Store, case: Dict[str, Any], needle: str) -> Iterator[Dict[
     for f in store.list_findings(case["id"]):
         if matches(f, needle, FINDING_TEXT_FIELDS):
             yield {"id": f["id"], "title": _short(f["title"]), "detail": f"{f['kind']} · {f['risk']} · {f['status']}",
-                   "tab": "findings"}
+                   "meta": {"kind": f["kind"], "risk": f["risk"], "status": f["status"]}, "tab": "findings"}
 
 
 def _evidence(store: Store, case: Dict[str, Any], needle: str) -> Iterator[Dict[str, Any]]:
     for e in store.list_evidence(case["id"]):
         if matches(e, needle, EVIDENCE_TEXT_FIELDS):
             yield {"id": e["sha256"], "title": e["path"], "detail": f"{e['status']} · SHA-256 {e['sha256'][:12]}…",
-                   "tab": "evidence"}
+                   "meta": {"status": e["status"]}, "tab": "evidence"}
 
 
 def _criteria(store: Store, case: Dict[str, Any], needle: str) -> Iterator[Dict[str, Any]]:

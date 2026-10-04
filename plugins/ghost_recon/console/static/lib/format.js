@@ -13,7 +13,29 @@ const AUDIT_STATUS = { open: "abierta", in_progress: "en curso", validated: "val
 const AUDIT_KIND = { initial: "inicial", rerun: "re-run", review: "revisión" };
 const FINDING_KIND = { exception: "excepción", anomaly: "anomalía", finding: "hallazgo", question: "pregunta" };
 
+const FINDING_STATUS = { open: "abierto", closed: "cerrado", downgraded: "degradado", upgraded: "elevado", superseded: "sustituido" };
+const EVIDENCE_STATUS = { NEW: "nuevo", REGISTERED: "registrado", MODIFIED: "modificado", DUP_PRIOR: "duplicado de una auditoría previa",
+  DUP_INTERNAL: "duplicado interno", DUP_CONTENT: "duplicado por contenido" };
+const RUN_KIND = { validation: "validación", reconcile: "conciliación", research: "investigación", review: "revisión" };
+const EVENT_LABEL = {
+  case_opened: "Caso abierto", case_reimported: "Caso re-importado", audit_started: "Auditoría iniciada",
+  audit_sealed: "Auditoría sellada", review_started: "Revisión iniciada", criterion_added: "Criterio añadido",
+  research: "Investigación", pack_built: "Paquete generado", evidence_modified: "Evidencia modificada",
+  results_exported: "Resultados exportados", console_job_launched: "Ejecución lanzada",
+  console_job_cancelled: "Ejecución cancelada", console_job_finished: "Ejecución terminada",
+};
+
+/** Timeline event type in Spanish; the run_<kind> family reads "Ejecución: <kind>", anything unknown stays raw. */
+export function eventLabel(type) {
+  if (EVENT_LABEL[type]) return EVENT_LABEL[type];
+  if (typeof type === "string" && type.startsWith("run_")) return `Ejecución: ${RUN_KIND[type.slice(4)] || type.slice(4)}`;
+  return type;
+}
+
 export const label = {
+  risk: (r) => RISK_LABEL[r] || r,
+  findingStatus: (s) => FINDING_STATUS[s] || s,
+  evidenceStatus: (s) => EVIDENCE_STATUS[s] || s,
   auditStatus: (s) => AUDIT_STATUS[s] || s,
   auditKind: (k) => AUDIT_KIND[k] || k,
   findingKind: (k) => FINDING_KIND[k] || k,
