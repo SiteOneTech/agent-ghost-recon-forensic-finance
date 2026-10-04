@@ -2,6 +2,7 @@
 runs; a cancel always wins over the runner's final write; the detached tree dies whole, on each OS."""
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -187,6 +188,26 @@ def test_an_unexpected_runner_error_kills_the_agent_and_fails_the_job(
     assert row["status"] == "failed" and "RuntimeError" in row["error"] and "disco lleno" in row["error"]
     assert not procs.alive(seen["row"]["pid"], seen["row"]["pid_started"])
     monkeypatch.setattr(Normalizer, "feed_line", real)
+
+
+def test_a_locked_database_never_kills_a_healthy_job(cstore, store, evidence, fake_agent, monkeypatch):
+    """A transient ``database is locked`` on a phase write is skipped for the cycle and retried; the final write
+    retries with backoff. Neither aborts the audit."""
+    job = _job(cstore, evidence, fake_agent({"steps": 3, "delay": 0.1}))
+    real = cstore.update_job
+    failed = []
+
+    def locked_once(job_id, **fields):
+        kind = "final" if fields.get("status") == "succeeded" else "phase" if "phase" in fields else None
+        if kind and kind not in failed:
+            failed.append(kind)
+            raise sqlite3.OperationalError("database is locked")
+        return real(job_id, **fields)
+
+    monkeypatch.setattr(cstore, "update_job", locked_once)
+    assert _run(cstore, store, job["id"]) == "succeeded"
+    row = cstore.get_job(job["id"])
+    assert sorted(failed) == ["final", "phase"] and row["phase"] and row["exit_code"] == 0
 
 
 def test_the_runner_module_runs_a_job_to_completion(cstore, evidence, fake_agent):

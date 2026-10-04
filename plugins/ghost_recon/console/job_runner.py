@@ -11,12 +11,14 @@ runner then stops the agent and exits.
 from __future__ import annotations
 
 import argparse
+import logging
 import os
+import sqlite3
 import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from ..core.db import Store, utcnow
 from . import events, jobfiles, procs
@@ -25,6 +27,21 @@ from .store import ACTIVE_STATUSES, ConsoleStore
 RESULT_TEXT_MAX = 20_000
 SELF_CHECK = "ghost-recon job runner ok"
 NO_IDENTITY_ERROR = "no se pudo verificar el proceso del agente al iniciarlo (PID y hora de inicio)"
+ESSENTIAL_WRITE_BACKOFF_S = (0.5, 1.0, 2.0, 4.0)
+logger = logging.getLogger(__name__)
+
+
+def _retrying(write: Callable[[], Any]) -> Any:
+    """An essential write (the agent's PID, the final state, the timeline event): a transient
+    ``sqlite3.OperationalError`` ("database is locked" past the busy timeout) is retried with backoff; the last failure
+    propagates, and the caller's abort path applies."""
+    for delay in ESSENTIAL_WRITE_BACKOFF_S:
+        try:
+            return write()
+        except sqlite3.OperationalError as exc:
+            logger.warning("ghost-recon job runner: %s; retrying in %.1f s", exc, delay)
+            time.sleep(delay)
+    return write()
 
 
 def final_state(returncode: int, result: Optional[Dict[str, Any]], stderr_tail: str) -> Dict[str, Any]:
@@ -98,7 +115,8 @@ class Runner:
             self._finish(job, {"status": "failed", "exit_code": agent.returncode, "error": NO_IDENTITY_ERROR})
             return self._status()
         try:
-            self.cstore.update_job(self.job_id, expect=("running",), pid=agent.pid, pid_started=started)
+            _retrying(lambda: self.cstore.update_job(self.job_id, expect=("running",), pid=agent.pid,
+                                                     pid_started=started))
             return self._supervise(job, agent, started)
         except BaseException as exc:
             self._abort(job, agent, started, exc)
@@ -138,13 +156,20 @@ class Runner:
         if final or not lines:
             new += self.norm.flush()  # an idle stream closes the pending group of generic tools
         jobfiles.append_events(self.events, new)
-        current = {"phase": self.norm.phase, "session_id": self.norm.session_id or None,
-                   "case_id": self.reported.get("case_id") or self._case_id(job)}
-        changed = {k: v for k, v in current.items() if v and v != self.reported.get(k)}
-        if changed:
-            self.reported.update(changed)
-            return self.cstore.update_job(self.job_id, expect=("running",), **changed)
-        return self._status() == "running"
+        try:
+            current = {"phase": self.norm.phase, "session_id": self.norm.session_id or None,
+                       "case_id": self.reported.get("case_id") or self._case_id(job)}
+            changed = {k: v for k, v in current.items() if v and v != self.reported.get(k)}
+            if changed:
+                ok = self.cstore.update_job(self.job_id, expect=("running",), **changed)
+                self.reported.update(changed)
+                return ok
+            return self._status() == "running"
+        except sqlite3.OperationalError as exc:
+            # A transient lock must not kill a healthy audit: skip this cycle's write. ``reported`` is unchanged, so
+            # the next cycle retries it (the final state carries phase/session/case anyway).
+            logger.warning("ghost-recon job runner: %s; the progress write is retried next cycle", exc)
+            return True
 
     def _finish(self, job: Dict[str, Any], state: Dict[str, Any]) -> None:
         result = self.norm.result or {}
@@ -155,11 +180,12 @@ class Runner:
         extra = {"result_text": text, "phase": self.norm.phase, "session_id": self.norm.session_id,
                  "case_id": case_id}
         fields.update({k: v for k, v in extra.items() if v})
-        if self.cstore.update_job(self.job_id, expect=("running",), **fields) and case_id:
+        if _retrying(lambda: self.cstore.update_job(self.job_id, expect=("running",), **fields)) and case_id:
             verb = "terminó" if state["status"] == "succeeded" else "falló"
-            self.store.add_event(case_id, "console_job_finished", f"Ejecución #{self.job_id} ({job['command']}) {verb}",
-                                 actor=job["launched_by"], ref={"job_id": self.job_id, "status": state["status"],
-                                                                "session_id": self.norm.session_id or None})
+            _retrying(lambda: self.store.add_event(
+                case_id, "console_job_finished", f"Ejecución #{self.job_id} ({job['command']}) {verb}",
+                actor=job["launched_by"], ref={"job_id": self.job_id, "status": state["status"],
+                                               "session_id": self.norm.session_id or None}))
 
 
 def main(argv: Optional[List[str]] = None) -> int:
