@@ -2,6 +2,7 @@
 orphans (also while the server is the runner's parent) and a job that outlives the service that launched it."""
 import subprocess
 import sys
+import time
 from dataclasses import replace
 from pathlib import Path
 
@@ -168,3 +169,37 @@ def test_a_runner_that_cannot_start_fails_the_job(make_jobs, case_root, cstore, 
     job = jobs.launch(LaunchRequest("new-open-case", str(_folder(case_root, "Caso Roto"))), ADMIN)
     row = cstore.get_job(job["id"])
     assert row["status"] == "failed" and "no se pudo iniciar" in row["error"]
+
+
+def test_an_agent_stamped_after_the_reconcile_snapshot_is_still_stopped(make_jobs, case_root, cstore, monkeypatch):
+    """The runner stamps its agent pid between reconcile's listing and its liveness check, then dies: the agent
+    must be killed from the row as it is when orphaned, not from the stale snapshot."""
+    jobs = make_jobs(runner=sleeper)
+    runner = subprocess.Popen(sleeper(0))
+    agent = subprocess.Popen(sleeper(0))
+    try:
+        runner_started, agent_started = procs.identity(runner.pid), procs.identity(agent.pid)
+        job = cstore.create_job(command="new-open-case", folder=str(_folder(case_root, "Caso Carrera")), args={},
+                                argv=["x"], launched_by="jean")
+        assert cstore.update_job(job["id"], status="running", runner_pid=runner.pid, runner_started=runner_started)
+        real_alive = procs.alive
+
+        def alive_after_the_stamp(pid, started):
+            if pid == runner.pid:
+                assert cstore.update_job(job["id"], expect=("running",), pid=agent.pid, pid_started=agent_started)
+                procs.kill_tree(runner.pid, runner_started)
+                runner.wait(timeout=30)
+            return real_alive(pid, started)
+
+        monkeypatch.setattr(procs, "alive", alive_after_the_stamp)
+        assert jobs.reconcile() == [job["id"]]
+        assert cstore.get_job(job["id"])["status"] == "orphaned"
+        monkeypatch.setattr(procs, "alive", real_alive)
+        deadline = time.monotonic() + 30
+        while real_alive(agent.pid, agent_started) and agent.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.1)
+        assert agent.poll() is not None or not real_alive(agent.pid, agent_started)
+    finally:
+        for proc in (runner, agent):
+            proc.kill()
+            proc.wait(timeout=30)

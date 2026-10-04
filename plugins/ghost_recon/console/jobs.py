@@ -158,8 +158,10 @@ class JobService:
                     continue
                 if self.cstore.update_job(job["id"], expect=("running",), status="orphaned", finished_at=utcnow(),
                                           error=ORPHAN_ERROR):
-                    procs.kill_tree(job["pid"], job["pid_started"])
-                    self._timeline(job, "console_job_finished",
+                    # The runner may have stamped the agent pid after the snapshot above; kill what the row holds now.
+                    current = self.cstore.get_job(job["id"])
+                    procs.kill_tree(current["pid"], current["pid_started"])
+                    self._timeline(current, "console_job_finished",
                                    f"Ejecución #{job['id']} ({job['command']}) terminó sin estado final",
                                    job["launched_by"])
                     orphaned.append(job["id"])
