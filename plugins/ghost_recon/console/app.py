@@ -20,7 +20,7 @@ from .auth import AuthService
 from .deps import ConsoleContext, current_principal
 from .jobs import JobService
 from .routers import (audits as audits_routes, auth as auth_routes, cases as cases_routes, fs as fs_routes,
-                      jobs as jobs_routes, system as system_routes)
+                      jobs as jobs_routes, system as system_routes, users as users_routes)
 from .settings import ConsoleSettings
 from .store import ConsoleStore
 
@@ -38,7 +38,7 @@ SECURITY_HEADERS = {
     "X-Frame-Options": "DENY",
     "Cross-Origin-Opener-Policy": "same-origin",
 }
-ROUTERS = (auth_routes, system_routes, cases_routes, audits_routes, fs_routes, jobs_routes)
+ROUTERS = (auth_routes, system_routes, cases_routes, audits_routes, fs_routes, jobs_routes, users_routes)
 
 
 def host_allowed(host_header: str, settings: ConsoleSettings) -> bool:

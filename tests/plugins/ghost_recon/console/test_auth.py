@@ -3,7 +3,8 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from plugins.ghost_recon.console.auth import AuthError, AuthService, LoginLocked, hash_password, verify_password
+from plugins.ghost_recon.console.auth import (AccountConflict, AuthError, AuthService, LoginLocked, hash_password,
+                                              verify_password)
 from plugins.ghost_recon.console.settings import ConsoleSettings
 
 
@@ -145,3 +146,13 @@ def test_session_timestamps_come_from_injected_clock():
     raw2, _ = svc.login("distant", "password-far-away-12")
     clock.advance(hours=13)
     assert svc.resolve_session(raw2) is None, "session must expire after 13 hours of idle (> 12h limit)"
+
+
+def test_the_last_active_admin_keeps_the_role_and_stays_enabled(svc):
+    with pytest.raises(AccountConflict):
+        svc.set_role("jean", "viewer")
+    with pytest.raises(AccountConflict):
+        svc.set_disabled("jean", True)
+    svc.add_user("ana", "admin-pass-456", "admin")
+    svc.set_role("jean", "viewer")
+    assert svc.cstore.get_user("jean")["role"] == "viewer"
