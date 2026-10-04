@@ -94,6 +94,8 @@ def test_cancel_a_queued_and_a_running_job(make_jobs, settings, case_root, cstor
     assert sum(1 for e in cstore.list_audit_log() if e["action"] == "job_cancel") == 2
 
 
+# On POSIX the orphaned agent is reparented to init, outside the test subtree; it is a process this test spawned, identity-checked.
+@pytest.mark.live_system_guard_bypass
 def test_a_runner_killed_while_the_server_is_its_parent_is_orphaned(make_jobs, case_root, cstore, fake_agent,
                                                                     wait_until):  # Review Focus 3
     jobs = make_jobs(hermes=fake_agent({"hang": True}))
@@ -171,6 +173,8 @@ def test_a_runner_that_cannot_start_fails_the_job(make_jobs, case_root, cstore, 
     assert row["status"] == "failed" and "no se pudo iniciar" in row["error"]
 
 
+# On POSIX the orphaned agent is reparented to init, outside the test subtree; it is a process this test spawned, identity-checked.
+@pytest.mark.live_system_guard_bypass
 def test_an_agent_stamped_after_the_reconcile_snapshot_is_still_stopped(make_jobs, case_root, cstore, monkeypatch):
     """The runner stamps its agent pid between reconcile's listing and its liveness check, then dies: the agent
     must be killed from the row as it is when orphaned, not from the stale snapshot."""
