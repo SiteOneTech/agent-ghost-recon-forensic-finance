@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 from urllib.parse import quote
 
 from ..core import ids
@@ -126,6 +127,41 @@ def filter_findings(rows: List[Dict[str, Any]], *, kind: str = "", risk: str = "
 def filter_evidence(rows: List[Dict[str, Any]], *, q: str = "") -> List[Dict[str, Any]]:
     needle = q.strip().lower()
     return [e for e in rows if not needle or _matches(e, needle, EVIDENCE_TEXT_FIELDS)]
+
+
+@dataclass(frozen=True)
+class TableFilters:
+    """The filters of the case tables (findings: kind, risk, status, q; evidence: status, audit, q)."""
+    kind: str = ""
+    risk: str = ""
+    status: str = ""
+    q: str = ""
+    audit: str = ""
+
+
+def findings_rows(store: Store, case_id: str, f: TableFilters) -> List[Dict[str, Any]]:
+    return filter_findings(store.list_findings(case_id), kind=f.kind, risk=f.risk, status=f.status, q=f.q)
+
+
+def evidence_rows(store: Store, case_id: str, f: TableFilters) -> List[Dict[str, Any]]:
+    rows = store.list_evidence(case_id, status=f.status or None,
+                               first_audit_id=f"{case_id}/{f.audit}" if f.audit else None)
+    return filter_evidence(rows, q=f.q)
+
+
+def timeline_rows(store: Store, case_id: str, f: TableFilters) -> List[Dict[str, Any]]:
+    """Newest first."""
+    return sorted(store.list_events(case_id), key=lambda e: (e["ts"], e["id"]), reverse=True)
+
+
+def criteria_rows(store: Store, case_id: str, f: TableFilters) -> List[Dict[str, Any]]:
+    return store.list_criteria(case_id)
+
+
+# One source for the rows of each case table: the JSON endpoints and the CSV/XLSX exports both read through it, so an
+# export always holds what the table shows with the same filters.
+TABLE_ROWS: Dict[str, Callable[[Store, str, TableFilters], List[Dict[str, Any]]]] = {
+    "findings": findings_rows, "evidence": evidence_rows, "timeline": timeline_rows, "criteria": criteria_rows}
 
 
 def page(rows: List[Dict[str, Any]], cursor: str = "", limit: int = 100) -> Tuple[List[Dict[str, Any]], Optional[str]]:

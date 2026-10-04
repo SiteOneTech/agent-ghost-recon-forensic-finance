@@ -1,0 +1,3 @@
+# The repository root ignores ``export*`` (local export dumps). Under the console those names are source files
+# (exporter.py, exports.py, routers/exports.py, static/views/export.js), so they are tracked.
+!export*
