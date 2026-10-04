@@ -1,25 +1,32 @@
 """ExportService: background builds of results ZIPs (spec §11) and their rows in ``console_exports``.
 
-A request is checked at once (``exporter.select``: a refused export never gets a row), then built by one worker
-thread, one archive at a time, with per-file progress in its row. The console audit log gets ``export_request`` and
-then ``export`` or ``export_failed``; the case timeline gets ``results_exported`` with the ZIP's SHA-256. A build does
-not survive a server restart: at start-up every export still queued or building is marked failed and partial files
-are removed, so a row never stays "building" forever.
+A request is checked at once (``exporter.select``: a refused export never gets a row; a case with an export still
+queued or building gets ``export_pending``), then built by one worker thread, one archive at a time, with per-file
+progress in its row. The console audit log gets ``export_request`` and then ``export`` or ``export_failed``; the case
+timeline gets ``results_exported`` with the ZIP's SHA-256. After every finished build the retention pass of
+``housekeeping`` runs, so ``export_retention`` holds between its hourly passes. A build does not survive a server
+restart: at start-up every export still queued or building is marked failed, and every file of the exports folder
+that no finished export owns (partial ``.part``, an archive whose row never succeeded) is removed, so a row never
+stays "building" forever and nothing piles up. Files of the exports folder are only ever served or removed as plain
+names directly inside it (``paths.file_inside``).
 """
 
 from __future__ import annotations
 
 import logging
 import queue
+import sqlite3
 import threading
 import time
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from ..core.db import Store, utcnow
-from . import exporter, fsjail
+from . import exporter, fsjail, housekeeping
 from .auth import Principal
 from .exporter import ExportError
+from .paths import file_inside
 from .settings import ConsoleSettings
 from .store import ACTIVE_STATUSES, EXPORT_PENDING, ConsoleStore
 
@@ -28,10 +35,34 @@ INTERRUPTED = "La exportación se interrumpió porque la consola se reinició: v
 INTERNAL = "Error interno al construir el ZIP; el detalle quedó en el log del servidor."
 PROGRESS_EVERY_S = 0.5
 STOP_JOIN_S = 30.0
+STATE_WRITE_BACKOFF_S = (0.2, 0.5, 1.0)
+ORPHAN_SUFFIXES = (".zip", ".zip.sha256", ".part")
+_ALL = 1_000_000
 
 
 class _Halted(Exception):
     """Raised from the progress callback to abort the build in flight when the service stops."""
+
+
+def is_draft(row: Dict[str, Any]) -> bool:
+    """An export that carries unsealed audits: once built its manifest says so (``detail.draft``); until then the
+    request's ``include_unsealed`` stands in for it."""
+    detail = row.get("detail") if isinstance(row.get("detail"), dict) else {}
+    return bool(detail["draft"]) if "draft" in detail else bool(row.get("include_unsealed"))
+
+
+def _retrying(write: Callable[[], Any]) -> Any:
+    """A state write the export cannot do without (claim, succeeded, failed): "database is locked" past the busy
+    timeout is retried with a short backoff; the last failure propagates."""
+    for delay in STATE_WRITE_BACKOFF_S:
+        try:
+            return write()
+        except sqlite3.OperationalError as exc:
+            if "locked" not in str(exc):
+                raise
+            logger.warning("ghost-recon console: export state write: %s; retrying in %.1f s", exc, delay)
+            time.sleep(delay)
+    return write()
 
 
 class ExportService:
@@ -44,6 +75,7 @@ class ExportService:
         self._queue: "queue.Queue[Optional[int]]" = queue.Queue()
         self._thread: Optional[threading.Thread] = None
         self._halt = threading.Event()
+        self._requests = threading.Lock()  # the pending check and the new row are one step (a double click)
 
     # ------------------------------------------------------------------ requests
     def busy(self, case: Dict[str, Any]) -> bool:
@@ -62,10 +94,16 @@ class ExportService:
 
     def request(self, case: Dict[str, Any], *, scope: str, seq: Optional[str], include_unsealed: bool,
                 principal: Principal, ip: str = "") -> Dict[str, Any]:
-        """Queue an export; ExportError right away when it could never be built."""
+        """Queue an export; ExportError right away when it could never be built or while the case already has one
+        queued or building (one at a time per case: the queue and the disk stay bounded)."""
         self.selection(case, scope=scope, seq=seq, include_unsealed=include_unsealed)
-        row = self.cstore.create_export(case_id=case["id"], scope=scope, seq=seq if scope == "audit" else None,
-                                        include_unsealed=include_unsealed, created_by=principal.username)
+        with self._requests:
+            pending = self.cstore.list_exports(statuses=EXPORT_PENDING, case_id=case["id"], limit=1)
+            if pending:
+                raise ExportError(409, "export_pending", "Ya hay una exportación en curso para este caso "
+                                  f"(#{pending[0]['id']}).", extra={"export_id": pending[0]["id"]})
+            row = self.cstore.create_export(case_id=case["id"], scope=scope, seq=seq if scope == "audit" else None,
+                                            include_unsealed=include_unsealed, created_by=principal.username)
         self.cstore.log("export_request", user_id=principal.user_id, username=principal.username, ip=ip,
                         target=f"export:{row['id']}", detail={"case_id": case["id"], "scope": scope,
                                                               "seq": row["seq"], "include_unsealed": include_unsealed})
@@ -85,21 +123,14 @@ class ExportService:
 
     def _inside(self, name: Optional[str]) -> Optional[Path]:
         """A plain file name that resolves directly inside the exports folder, else None."""
-        if not name or name in (".", "..") or "/" in name or "\\" in name or Path(name).is_absolute():
-            return None
-        path = self.dir / name
-        try:
-            if path.resolve().parent != self.dir.resolve():
-                return None
-        except OSError:
-            return None
-        return path if path.is_file() else None
+        return file_inside(self.dir, name)
 
     # ------------------------------------------------------------------ building
     def build(self, export_id: int) -> Dict[str, Any]:
         row = self.cstore.get_export(export_id)
-        if not row or not self.cstore.update_export(export_id, expect=("queued",), status="building",
-                                                    started_at=utcnow()):
+        # The claim is retried too: a row stuck "queued" would also block the case's next export (export_pending).
+        if not row or not _retrying(lambda: self.cstore.update_export(
+                export_id, expect=("queued",), status="building", started_at=utcnow())):
             return row
         last = [0.0]
 
@@ -109,7 +140,10 @@ class ExportService:
                 raise _Halted
             if done == total or now - last[0] >= PROGRESS_EVERY_S:
                 last[0] = now
-                self.cstore.update_export(export_id, expect=("building",), files_done=done, files_total=total)
+                try:  # progress is best effort: a busy database never stops the build
+                    self.cstore.update_export(export_id, expect=("building",), files_done=done, files_total=total)
+                except sqlite3.Error as exc:
+                    logger.debug("ghost-recon console: export %s progress not saved: %s", export_id, exc)
 
         try:
             case = self.store.get_case(row["case_id"])
@@ -126,7 +160,8 @@ class ExportService:
             logger.exception("ghost-recon console: export %s failed", export_id)
             self._fail(row, "internal", INTERNAL)
         else:
-            self._succeed(row, case, result)
+            if self._succeed(row, case, result):
+                self._prune()
         return self.cstore.get_export(export_id)
 
     def _log(self, action: str, row: Dict[str, Any], detail: Dict[str, Any]) -> None:
@@ -134,15 +169,16 @@ class ExportService:
         self.cstore.log(action, user_id=(user or {}).get("id"), username=row["created_by"], target=f"export:{row['id']}",
                         detail={"case_id": row["case_id"], **detail})
 
-    def _succeed(self, row: Dict[str, Any], case: Dict[str, Any], result: Dict[str, Any]) -> None:
+    def _succeed(self, row: Dict[str, Any], case: Dict[str, Any], result: Dict[str, Any]) -> bool:
         manifest = result["manifest"]
         files = len(manifest["files"])
         detail = {"audits": [{"seq": a["seq"], "state": a["state"]} for a in manifest["audits"]],
                   "excluded": manifest["excluded"], "skipped": manifest["skipped"], "draft": manifest["draft"]}
-        if not self.cstore.update_export(row["id"], expect=("building",), status="succeeded", finished_at=utcnow(),
-                                         size=result["size"], sha256=result["sha256"], file_name=result["file_name"],
-                                         files_done=files, files_total=files, detail=detail):
-            return  # a restart verdict already stands; the late result is not recorded
+        if not _retrying(lambda: self.cstore.update_export(
+                row["id"], expect=("building",), status="succeeded", finished_at=utcnow(), size=result["size"],
+                sha256=result["sha256"], file_name=result["file_name"], files_done=files, files_total=files,
+                detail=detail)):
+            return False  # a restart verdict already stands; the late result is not recorded
         self._log("export", row, {"scope": row["scope"], "seq": row["seq"], "draft": manifest["draft"],
                                   "file": result["file_name"], "size": result["size"], "sha256": result["sha256"]})
         what = row["seq"] or "caso completo"
@@ -152,28 +188,45 @@ class ExportService:
                              actor=row["created_by"],
                              ref={"export_id": row["id"], "file": result["file_name"], "sha256": result["sha256"],
                                   "scope": row["scope"], "seq": row["seq"], "draft": manifest["draft"]})
+        return True
 
     def _fail(self, row: Dict[str, Any], code: str, message: str, expect=EXPORT_PENDING) -> None:
-        if not self.cstore.update_export(row["id"], expect=expect, status="failed", finished_at=utcnow(),
-                                         error=message, detail={"code": code}):
+        if not _retrying(lambda: self.cstore.update_export(row["id"], expect=expect, status="failed",
+                                                           finished_at=utcnow(), error=message,
+                                                           detail={"code": code})):
             return
         self._log("export_failed", row, {"code": code, "message": message})
 
+    def _prune(self) -> None:
+        """The retention part of housekeeping, right after a build, so ``export_retention`` holds between passes."""
+        try:
+            housekeeping.prune_exports(self.cstore, self.settings, self.dir, datetime.now(timezone.utc))
+        except Exception:  # the export itself is done and recorded; the hourly pass retries the clean-up
+            logger.exception("ghost-recon console: export retention after a build failed")
+
     # ------------------------------------------------------------------ lifecycle
     def recover(self) -> List[int]:
-        """Start-up: an export left queued or building by a previous server never finishes; fail it and remove the
-        partial archives."""
+        """Start-up: an export left queued or building by a previous server never finishes; fail it. Then remove
+        every archive, sidecar or ``.part`` of the exports folder that no succeeded export owns (partial files, an
+        archive whose row never succeeded), each through the same containment check as the downloads."""
         interrupted = [row["id"] for row in self.cstore.list_exports(statuses=EXPORT_PENDING)
                        if self.cstore.update_export(row["id"], expect=EXPORT_PENDING, status="failed",
                                                     finished_at=utcnow(), error=INTERRUPTED,
                                                     detail={"code": "interrupted"})]
-        for part in self.dir.glob("*.zip.part"):
-            part.unlink(missing_ok=True)
+        owned = set()
+        for row in self.cstore.list_exports(statuses=("succeeded",), limit=_ALL):
+            if row["file_name"]:
+                owned.update((row["file_name"], f"{row['file_name']}.sha256"))
+        names = sorted(p.name for p in self.dir.iterdir()) if self.dir.is_dir() else []
+        for name in names:
+            path = self._inside(name) if name.endswith(ORPHAN_SUFFIXES) and name not in owned else None
+            if path is not None:
+                housekeeping.remove_file(path)
         return interrupted
 
     def start(self) -> None:
-        self.recover()
-        if self._thread is None:
+        if self._thread is None:  # never while a build is in flight: its .part is not an orphan
+            self.recover()
             self._halt.clear()
             while not self._queue.empty():  # leftovers of a previous run: recover() failed those rows
                 self._queue.get_nowait()

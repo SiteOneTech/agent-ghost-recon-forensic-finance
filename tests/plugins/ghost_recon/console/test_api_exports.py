@@ -52,6 +52,12 @@ def test_only_an_admin_includes_unsealed_audits_and_they_come_marked_draft(login
     row = _wait_done(admin, wait_until, _export(admin, seeded, include_unsealed=True).json()["export_id"])
     assert row["status"] == "succeeded" and row["detail"]["draft"] is True and "-DRAFT_" in row["file_name"]
     assert {a["seq"]: a["state"] for a in row["detail"]["audits"]} == {"A01": "SEALED", "A02": "DRAFT"}
+    for path in ("", "/download", "/sha256"):  # a DRAFT export is read by admins only: status, ZIP and sidecar
+        denied = viewer.get(f"/api/v1/exports/{row['id']}{path}")
+        assert denied.status_code == 403 and denied.json()["error"]["code"] == "forbidden", path
+        assert admin.get(f"/api/v1/exports/{row['id']}{path}").status_code == 200, path
+    log = admin.get("/api/v1/system/audit-log").json()["items"]
+    assert sum(e["action"] == "export_download_denied" and e["username"] == "vera" for e in log) == 2
 
 
 def test_the_configured_default_includes_unsealed_audits_for_admins_only(store, cstore, settings, auth, jobs,
@@ -77,6 +83,28 @@ def test_the_preview_explains_what_stays_out_while_a_job_is_active(login_as, see
     r = c.post(f"/api/v1/cases/{seeded['case_id']}/export", json={"scope": "audit", "seq": "A02",
                                                                    "include_unsealed": True})
     assert r.status_code == 409 and r.json()["error"]["code"] == "job_running"
+
+
+def test_a_case_has_one_pending_export_at_a_time(login_as, seeded, cstore, wait_until, monkeypatch):
+    """A second «Exportar» while the first build is still queued or running is refused naming it, and no row is
+    created; once the first ends the case exports again."""
+    gate, real_build = threading.Event(), exporter.build
+
+    def held_build(*args, **kwargs):
+        gate.wait(30)
+        return real_build(*args, **kwargs)
+    monkeypatch.setattr(exporter, "build", held_build)
+    c = login_as("viewer")
+    try:
+        first = _export(c, seeded).json()["export_id"]
+        second = _export(c, seeded)
+        assert second.status_code == 409 and second.json()["error"]["code"] == "export_pending"
+        assert second.json()["error"]["export_id"] == first and f"#{first}" in second.json()["error"]["message"]
+        assert [e["id"] for e in cstore.list_exports() if e["case_id"] == seeded["case_id"]] == [first]
+    finally:
+        gate.set()
+    assert _wait_done(c, wait_until, first)["status"] == "succeeded"
+    assert _export(c, seeded).status_code == 202
 
 
 def test_requests_that_could_never_build_are_refused_at_once(login_as, seeded):

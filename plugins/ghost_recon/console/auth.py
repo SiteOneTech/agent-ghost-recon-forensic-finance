@@ -218,7 +218,9 @@ class AuthService:
                 recent = []
             self._failures[key] = recent
 
-    def resolve_session(self, raw: str) -> Optional[Principal]:
+    def resolve_session(self, raw: str, *, touch: bool = True) -> Optional[Principal]:
+        """The session's principal while it is neither revoked, idle past ``session_idle_hours`` nor past its absolute
+        expiry. ``touch=False`` (background polls, the stream's re-check) leaves last-seen alone."""
         if not raw:
             return None
         s = self.cstore.get_session(_sha(raw))
@@ -230,7 +232,7 @@ class AuthService:
         idle = now - _parse(s["last_seen_at"])
         if idle > timedelta(hours=self.settings.session_idle_hours):
             return None
-        if idle >= TOUCH_EVERY:
+        if touch and idle >= TOUCH_EVERY:
             self._touch(self.cstore.touch_session, s["id"], _iso(now))
         return Principal(s["user_id"], s["username"], s["role"], "session", s["id"], s["csrf_token"])
 
@@ -265,14 +267,14 @@ class AuthService:
                         detail={"name": label, "user": user["username"]})
         return raw, {"id": token_id, "prefix": prefix, "name": label}
 
-    def resolve_bearer(self, raw: str) -> Optional[Principal]:
+    def resolve_bearer(self, raw: str, *, touch: bool = True) -> Optional[Principal]:
         if not raw or not raw.startswith(f"{TOKEN_PREFIX}_"):
             return None
         t = self.cstore.get_token(_sha(raw))
         if not t or t["revoked"] or t["disabled"]:
             return None
         now = self.clock()
-        if not t["last_used_at"] or now - _parse(t["last_used_at"]) >= TOUCH_EVERY:
+        if touch and (not t["last_used_at"] or now - _parse(t["last_used_at"]) >= TOUCH_EVERY):
             self._touch(self.cstore.touch_token, t["id"], _iso(now))
         return Principal(t["user_id"], t["username"], t["role"], "token")
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import unicodedata
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -91,9 +92,9 @@ def list_cases(store: Store, cstore: ConsoleStore, *, q: str = "", status: str =
         rows = [r for r in rows if r["open_total"] > 0]
     elif risk:
         rows = [r for r in rows if r["open_by_risk"].get(risk, 0) > 0]
-    needle = q.strip().lower()
+    needle = q.strip()
     if needle:
-        rows = [r for r in rows if any(needle in r[k].lower() for k in ("name", "id", "root_path"))]
+        rows = [r for r in rows if matches(r, needle, ("name", "id", "root_path"))]
     return _recent_first(rows)
 
 
@@ -119,9 +120,17 @@ def case_detail(store: Store, cstore: ConsoleStore, case: Dict[str, Any]) -> Dic
             "research_notes": len(store.list_research_notes(case["id"]))}
 
 
+def fold(text: Any) -> str:
+    """Case- and accent-insensitive form of a text (NFKD without combining marks, casefolded): «Conciliación» and
+    «conciliacion» fold alike."""
+    decomposed = unicodedata.normalize("NFKD", str(text or ""))
+    return "".join(c for c in decomposed if not unicodedata.combining(c)).casefold()
+
+
 def matches(row: Dict[str, Any], needle: str, fields: Tuple[str, ...]) -> bool:
-    """``needle`` (already lowercased) is a substring of any of the row's ``fields``."""
-    return any(needle in str(row.get(k) or "").lower() for k in fields)
+    """``needle`` is a substring of any of the row's ``fields``, ignoring case and accents on both sides."""
+    folded = fold(needle)
+    return any(folded in fold(row.get(k)) for k in fields)
 
 
 def filter_findings(rows: List[Dict[str, Any]], *, kind: str = "", risk: str = "", status: str = "",

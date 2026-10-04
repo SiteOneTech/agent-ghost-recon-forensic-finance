@@ -1,5 +1,6 @@
 """Export endpoints (viewer): the results ZIP of a case or an audit (built in the background; unsealed audits only for
-an admin) and the case tables as CSV/XLSX with the filters of their JSON endpoints."""
+an admin, and a DRAFT export is read by admins only) and the case tables as CSV/XLSX with the filters of their JSON
+endpoints."""
 
 from __future__ import annotations
 
@@ -15,11 +16,13 @@ from ..auth import Principal
 from ..deps import ApiError, ConsoleContext, client_ip, get_ctx, require
 from ..downloads import attachment
 from ..exporter import ExportError
+from ..exports import is_draft
 from ..store import EXPORT_PENDING
 from .cases import get_case_or_404
 
 router = APIRouter(tags=["exports"])
 SEQ_PATTERN = r"^[AR]\d{2,3}$"
+DRAFT_ADMIN_ONLY = "Solo un admin puede descargar exportaciones con auditorías sin sellar."
 
 
 class ExportBody(BaseModel):
@@ -36,6 +39,10 @@ def _include_unsealed(ctx: ConsoleContext, principal: Principal, asked: Optional
     return asked
 
 
+def _api_error(exc: ExportError) -> ApiError:
+    return ApiError(exc.status, exc.code, exc.message, extra=exc.extra)
+
+
 def _scope(scope: str, seq: Optional[str]) -> None:
     if scope == "audit" and not seq:
         raise ApiError(422, "invalid_argument", "falta la auditoría (seq) para exportar una sola auditoría")
@@ -45,6 +52,18 @@ def _export_or_404(ctx: ConsoleContext, export_id: int) -> dict:
     row = ctx.cstore.get_export(export_id)
     if not row:
         raise ApiError(404, "not_found", f"exportación no encontrada: {export_id}")
+    return row
+
+
+def _draft_guard(ctx: ConsoleContext, row: dict, principal: Principal, request: Optional[Request] = None) -> dict:
+    """A DRAFT export (unsealed audits inside) is read by admins only. A refused download (``request`` given) is in
+    the console audit log, like a refused deliverable download."""
+    if is_draft(row) and not principal.has("admin"):
+        if request is not None:
+            ctx.cstore.log("export_download_denied", user_id=principal.user_id, username=principal.username,
+                           ip=client_ip(request), target=f"export:{row['id']}",
+                           detail={"code": "forbidden", "case_id": row["case_id"], "file": row["file_name"]})
+        raise ApiError(403, "forbidden", DRAFT_ADMIN_ONLY)
     return row
 
 
@@ -59,7 +78,7 @@ def export_preview(case_id: str, scope: Literal["case", "audit"] = "case",
     try:
         view = ctx.exports.preview(case, scope=scope, seq=seq, include_unsealed=include)
     except ExportError as exc:
-        raise ApiError(exc.status, exc.code, exc.message) from exc
+        raise _api_error(exc) from exc
     return {**view, "include_unsealed": include, "can_include_unsealed": principal.has("admin")}
 
 
@@ -73,23 +92,26 @@ def export_case(case_id: str, body: ExportBody, request: Request, principal: Pri
         row = ctx.exports.request(case, scope=body.scope, seq=body.seq, include_unsealed=include,
                                   principal=principal, ip=client_ip(request))
     except ExportError as exc:
-        raise ApiError(exc.status, exc.code, exc.message) from exc
+        raise _api_error(exc) from exc
     return {"export_id": row["id"], "export": row}
 
 
 @router.get("/exports/{export_id}")
-def export_status(export_id: int, _: Principal = Depends(require("viewer")), ctx: ConsoleContext = Depends(get_ctx)):
-    """State, progress (files_done / files_total), size and SHA-256 once built."""
-    return _export_or_404(ctx, export_id)
+def export_status(export_id: int, principal: Principal = Depends(require("viewer")),
+                  ctx: ConsoleContext = Depends(get_ctx)):
+    """State, progress (files_done / files_total), size and SHA-256 once built; ``available``: its ZIP is on disk."""
+    row = _draft_guard(ctx, _export_or_404(ctx, export_id), principal)
+    return {**row, "available": ctx.exports.file_path(row) is not None}
 
 
-def _finished_file(ctx: ConsoleContext, row: dict):
+def _finished_file(ctx: ConsoleContext, request: Request, principal: Principal, export_id: int):
+    row = _draft_guard(ctx, _export_or_404(ctx, export_id), principal, request)
     if row["status"] in EXPORT_PENDING:
         raise ApiError(409, "not_ready", "el ZIP todavía se está construyendo")
     path = ctx.exports.file_path(row)
     if path is None:
         raise _gone()
-    return path
+    return row, path
 
 
 def _gone() -> ApiError:
@@ -99,8 +121,7 @@ def _gone() -> ApiError:
 @router.get("/exports/{export_id}/download")
 def export_download(export_id: int, request: Request, principal: Principal = Depends(require("viewer")),
                     ctx: ConsoleContext = Depends(get_ctx)):
-    row = _export_or_404(ctx, export_id)
-    path = _finished_file(ctx, row)
+    row, path = _finished_file(ctx, request, principal, export_id)
     try:
         path.stat()
     except OSError as exc:
@@ -111,10 +132,10 @@ def export_download(export_id: int, request: Request, principal: Principal = Dep
 
 
 @router.get("/exports/{export_id}/sha256")
-def export_sidecar(export_id: int, _: Principal = Depends(require("viewer")), ctx: ConsoleContext = Depends(get_ctx)):
+def export_sidecar(export_id: int, request: Request, principal: Principal = Depends(require("viewer")),
+                   ctx: ConsoleContext = Depends(get_ctx)):
     """The ``<zip>.sha256`` beside the archive (``sha256sum -c`` format)."""
-    row = _export_or_404(ctx, export_id)
-    _finished_file(ctx, row)
+    row, _archive = _finished_file(ctx, request, principal, export_id)
     sidecar = ctx.exports.sidecar_path(row)
     try:
         data = sidecar.read_bytes() if sidecar else None

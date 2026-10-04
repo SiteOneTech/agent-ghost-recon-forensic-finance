@@ -1,12 +1,14 @@
 """ZIP of a case's results (spec §11): what goes in, the seal checks before and while packing, and the manifest.
 
 Only the case's results folder is read (``<case>/<audits_dir>`` or its ``--out``), never the evidence: ``case.json``,
-``corpus_inventory.csv``, ``_console/`` and the selected audit folders (reviews included). Symlinks and junctions are
-skipped and listed, every file must resolve inside the results folder, and a results folder that holds the case's
-evidence folder is refused. Unsealed audits go in only on request and marked DRAFT; while a job is active on the case
-its open audits never do. Each selected seal is verified first and every sealed file is hashed again as it is packed,
-so a change at any moment fails the export naming the file. The archive is written as ``<name>.part`` and renamed only
-once complete, with its SHA-256 beside it in ``<name>.sha256`` (``sha256sum -c`` format).
+``corpus_inventory.csv``, ``_console/`` and the selected audit folders (reviews included). Only regular files go in:
+symlinks, junctions and special files (FIFOs, sockets, devices) are skipped and listed, every file must resolve inside
+the results folder, and a results folder that holds the case's evidence folder is refused. Unsealed audits go in only
+on request and marked DRAFT; while a job is active on the case its open audits never do, nor the root files the agent
+may be rewriting (``case.json``, ``corpus_inventory.csv``). Each selected seal is verified first and every sealed file
+is hashed again as it is packed, so a change at any moment fails the export naming the file. The archive is written as
+``<name>.part`` and renamed only once complete, with its SHA-256 beside it in ``<name>.sha256`` (``sha256sum -c``
+format).
 """
 
 from __future__ import annotations
@@ -37,16 +39,18 @@ EXCLUDED_REASONS = {
     "not_sealed": "está abierta (sin sellar): solo entra si un admin incluye las auditorías abiertas",
     "job_running": "hay una ejecución activa en el caso y la auditoría abierta puede estar a medio escribir",
 }
+HELD_TEXT = "hay una ejecución activa en el caso y el agente puede estar reescribiéndolo"
 
 
 class ExportError(Exception):
     """An export the console refuses or stops; ``status`` and ``code`` map to the API error envelope."""
 
-    def __init__(self, status: int, code: str, message: str):
+    def __init__(self, status: int, code: str, message: str, extra: Optional[Dict[str, Any]] = None):
         super().__init__(message)
         self.status = status
         self.code = code
         self.message = message
+        self.extra = extra or {}  # more fields for the error envelope (e.g. the export already in progress)
 
 
 def exports_dir() -> Path:
@@ -65,6 +69,7 @@ class Selection:
     seq: Optional[str]
     audits: List[Dict[str, Any]]    # the audit rows that go in, each with "draft" (True = not sealed)
     excluded: List[Dict[str, str]]  # {"id", "seq", "reason"}
+    busy: bool = False              # a job is queued or running on the case
 
     @property
     def draft(self) -> bool:
@@ -112,14 +117,17 @@ def select(store: Store, case: Dict[str, Any], *, scope: str, seq: Optional[str]
                               f"{EXCLUDED_REASONS[first['reason']]}.")
         raise ExportError(409, "nothing_to_export", "El caso no tiene auditorías que se puedan exportar: ninguna "
                           "está sellada (un admin puede incluir las abiertas, marcadas como borrador).")
-    return Selection(case, root, scope, seq if scope == "audit" else None, chosen, excluded)
+    return Selection(case, root, scope, seq if scope == "audit" else None, chosen, excluded, busy)
 
 
 def selection_view(sel: Selection) -> Dict[str, Any]:
+    """What the preview shows. ``skipped``: the root files held out while a job runs (links are only found by the
+    build's walk and land in the manifest)."""
     return {"scope": sel.scope, "seq": sel.seq, "draft": sel.draft, "results_root": str(sel.results_root),
             "audits": [{"id": a["id"], "seq": ids.short_audit(a["id"]), "kind": a["kind"], "status": a["status"],
                         "draft": a["draft"]} for a in sel.audits],
-            "excluded": [{**e, "text": EXCLUDED_REASONS[e["reason"]]} for e in sel.excluded]}
+            "excluded": [{**e, "text": EXCLUDED_REASONS[e["reason"]]} for e in sel.excluded],
+            "skipped": [{"path": name, "reason": "job_running", "text": HELD_TEXT} for name in held_root_files(sel)]}
 
 
 @dataclass(frozen=True)
@@ -146,9 +154,18 @@ def _arc(path: Path, root: Path) -> str:
     return path.relative_to(root).as_posix()
 
 
+def _is_regular(path: Path) -> bool:
+    """A regular file itself (``lstat``): never a FIFO, socket or device, whose read could block the build forever."""
+    try:
+        return stat.S_ISREG(os.lstat(path).st_mode)
+    except OSError:
+        return False
+
+
 def _walk(base: Path, root: Path, skipped: List[Dict[str, str]]) -> Iterator[Path]:
-    """Regular files under ``base``, sorted; symlinks and junctions are never followed nor packed, and a file that
-    does not resolve inside ``root`` is left out. Both go to ``skipped``."""
+    """Regular files under ``base``, sorted; symlinks and junctions are never followed nor packed, special files
+    (FIFOs, sockets, devices) are never opened, and a file that does not resolve inside ``root`` is left out. All of
+    them go to ``skipped``."""
     for dirpath, dirnames, filenames in os.walk(base):
         here = Path(dirpath)
         kept = []
@@ -162,19 +179,30 @@ def _walk(base: Path, root: Path, skipped: List[Dict[str, str]]) -> Iterator[Pat
             path = here / name
             if _is_link(path):
                 skipped.append({"path": _arc(path, root), "reason": "symlink"})
+            elif not _is_regular(path):
+                skipped.append({"path": _arc(path, root), "reason": "not_a_regular_file"})
             elif resolve_within(path, [root]) is None:
                 skipped.append({"path": _arc(path, root), "reason": "outside_results"})
             else:
                 yield path
 
 
+def held_root_files(sel: Selection) -> List[str]:
+    """The root files left out because a job on the case may be rewriting them right now."""
+    return [name for name in ROOT_FILES
+            if sel.busy and not _is_link(sel.results_root / name) and _is_regular(sel.results_root / name)]
+
+
 def plan_entries(sel: Selection) -> Tuple[List[Entry], List[Dict[str, str]]]:
     root, skipped, entries = sel.results_root, [], []
+    held = held_root_files(sel)
     for name in ROOT_FILES:
         path = root / name
         if _is_link(path):
             skipped.append({"path": name, "reason": "symlink"})
-        elif path.is_file():
+        elif name in held:
+            skipped.append({"path": name, "reason": "job_running"})
+        elif _is_regular(path):
             entries.append(Entry(name, path))
     console = root / CONSOLE_DIR
     if _is_link(console):
@@ -288,18 +316,21 @@ def build(store: Store, cstore: ConsoleStore, sel: Selection, *, export_id: int,
         name = f"{name[:-4]}_e{export_id}.zip"  # two exports in the same minute never share a file
     final, part = dest_dir / name, dest_dir / f"{name}.part"
     files: List[Dict[str, Any]] = []
-    packed: Dict[Path, Set[str]] = {}
+    packed: Dict[Path, Tuple[Optional[Dict[str, str]], Set[str]]] = {}  # sealed folder -> (plan-time seal, packed)
     try:
         with zipfile.ZipFile(part, "w", compression=zipfile.ZIP_DEFLATED, allowZip64=True) as zf:
             for done, entry in enumerate(entries, 1):
                 sha, size, seal_bytes = _pack(zf, entry)
                 if entry.audit_folder is not None:
-                    packed.setdefault(entry.audit_folder, set()).add(_check_sealed(entry, sha, seal_bytes))
+                    rel = _check_sealed(entry, sha, seal_bytes)
+                    packed.setdefault(entry.audit_folder, (entry.seal, set()))[1].add(rel)
                 files.append({"path": entry.arcname, "size": size, "sha256": sha})
                 if progress:
                     progress(done, len(entries))
-            for folder, rels in packed.items():
-                lost = sorted(set(integrity.seal_hashes(folder) or {}) - rels)  # links count as missing too
+            for folder, (seal, rels) in packed.items():
+                # The plan-time seal is the one proven equal to the SEALED.json packed (``_seal_matches_row``): a file
+                # it lists that never went in is missing (links count as missing too).
+                lost = sorted(set(seal or {}) - rels)
                 if lost:
                     raise ExportError(409, "seal_broken", f"{_arc(folder / lost[0], sel.results_root)} falta o es un "
                                       "enlace en la auditoría sellada. No se exportó nada.")

@@ -39,6 +39,8 @@ def test_findings_are_found_by_id_and_by_title_across_cases(login_as, store, two
         assert hit["meta"] == {"kind": stored["kind"], "risk": stored["risk"], "status": stored["status"]}
     by_title = _search(c, q="sin soporte")["items"]["finding"]
     assert [(f["case_id"], f["tab"]) for f in by_title] == [(two_cases["beta"], "findings")]
+    unaccented = _search(c, q="QUIEN autorizo", types="finding")["items"]["finding"]  # «¿Quién autorizó el acta?»
+    assert [(f["case_id"], f["id"]) for f in unaccented] == [(two_cases["acme"], "Q-01")]
 
 
 def test_evidence_is_found_by_name_and_by_hash(login_as, store, two_cases):

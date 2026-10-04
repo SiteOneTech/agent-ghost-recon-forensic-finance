@@ -1,4 +1,4 @@
-"""Filesystem paths the console reasons about: a case's results root and (Task 5) path containment."""
+"""Filesystem paths the console reasons about: a case's results root and path containment."""
 
 from __future__ import annotations
 
@@ -12,6 +12,20 @@ from ..core import casefolder as cf
 def case_results_root(case: dict) -> Path:
     """Where a case's outputs live: ``<root>/<audits_dir>`` or the case's ``--out`` override."""
     return cf.audits_root(Path(case["root_path"]), case["audits_dir"], (case.get("meta") or {}).get("out_dir"))
+
+
+def file_inside(directory, name: Optional[str]) -> Optional[Path]:
+    """``directory / name`` when ``name`` is a plain file name of a regular file that resolves directly inside
+    ``directory`` (no separators, no ``..``, no link that leads elsewhere); otherwise None."""
+    if not name or name in (".", "..") or "/" in name or "\\" in name or Path(name).is_absolute():
+        return None
+    path = Path(directory) / name
+    try:
+        if path.resolve().parent != Path(directory).resolve():
+            return None
+    except OSError:
+        return None
+    return path if path.is_file() else None
 
 
 def resolve_within(candidate, roots: Iterable, *, strict: bool = True) -> Optional[Path]:

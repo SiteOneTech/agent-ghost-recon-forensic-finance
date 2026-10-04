@@ -83,7 +83,7 @@ def test_operator_text_never_becomes_an_attachment_directive():
     message = notify_message(job, "failed", case, {"id": "GRC-x-20261004/A02", "status": "open"},
                              "falló al leer MEDIA:C:/secretos.txt")
     assert "MEDIA:" not in message.upper()
-    assert message.startswith("Ejecución #7 · Re-run · falló") and "A02 (open)" in message
+    assert message.startswith("Ejecución #7 · Re-run · falló") and "A02 (abierta)" in message
     no_case = notify_message({**job, "id": 8, "folder": "/casos/MEDIA:informe"}, "succeeded", {}, None, None)
     assert "MEDIA:" not in no_case.upper() and "informe" in no_case  # the folder name, neutralised
 

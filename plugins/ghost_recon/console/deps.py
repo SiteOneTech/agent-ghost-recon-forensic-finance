@@ -16,14 +16,17 @@ from .settings import ConsoleSettings
 from .store import ConsoleStore
 
 CSRF_HEADER = "x-gr-csrf"
+BACKGROUND_HEADER = "x-gr-background"  # "1": the page asked on its own (a poll), not the user
 SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
 
 class ApiError(HTTPException):
-    """HTTP error rendered as ``{"error": {"code", "message"}}`` by the app's exception handler."""
+    """HTTP error rendered as ``{"error": {"code", "message", **extra}}`` by the app's exception handler."""
 
-    def __init__(self, status: int, code: str, message: str, headers: dict | None = None):
-        super().__init__(status_code=status, detail={"code": code, "message": message}, headers=headers)
+    def __init__(self, status: int, code: str, message: str, headers: dict | None = None,
+                 extra: dict | None = None):
+        super().__init__(status_code=status, detail={**(extra or {}), "code": code, "message": message},
+                         headers=headers)
 
 
 @dataclass
@@ -58,13 +61,19 @@ def _bearer(request: Request) -> Optional[str]:
     return authz[7:].strip() if authz[:7].lower() == "bearer " else None
 
 
-def resolve_principal(request: Request, ctx: ConsoleContext) -> Optional[Principal]:
+def _is_background(request: Request) -> bool:
+    return request.headers.get(BACKGROUND_HEADER, "") == "1"
+
+
+def resolve_principal(request: Request, ctx: ConsoleContext, *, touch: bool = True) -> Optional[Principal]:
     """Who the request acts for right now (Bearer token or session cookie), or None. No CSRF check, so a long-lived
-    stream can ask again later."""
+    stream can ask again later. ``touch=False`` (and any request marked as a background poll) still authenticates and
+    still expires, but never refreshes last-seen: only what the user does keeps a session alive."""
+    touch = touch and not _is_background(request)
     token = _bearer(request)
     if token is not None:
-        return ctx.auth.resolve_bearer(token)
-    return ctx.auth.resolve_session(request.cookies.get(session_cookie_name(ctx.settings), ""))
+        return ctx.auth.resolve_bearer(token, touch=touch)
+    return ctx.auth.resolve_session(request.cookies.get(session_cookie_name(ctx.settings), ""), touch=touch)
 
 
 def current_principal(request: Request, ctx: ConsoleContext = Depends(get_ctx)) -> Principal:

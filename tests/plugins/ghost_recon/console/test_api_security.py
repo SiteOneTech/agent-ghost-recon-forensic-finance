@@ -100,3 +100,24 @@ def test_two_consoles_on_one_host_keep_separate_sessions(store, cstore, users):
         assert b.post("/api/v1/auth/login", json={"username": "vera", "password": users["viewer"][1]}).status_code == 200
         assert a.get("/api/v1/auth/me").json()["user"]["username"] == "jean"
         assert b.get("/api/v1/auth/me").json()["user"]["username"] == "vera"
+
+
+def test_background_polls_never_keep_a_session_alive(login_as, cstore):
+    """What the page asks on its own (``X-GR-Background: 1``) still authenticates and still expires, but leaves
+    last-seen alone, so an open tab nobody uses times out; a request the user makes refreshes it."""
+    from datetime import datetime, timedelta, timezone
+    c = login_as("viewer")
+
+    def seen_at(ago=None):
+        if ago is not None:
+            stamp = (datetime.now(timezone.utc) - ago).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+            cstore.conn.execute("UPDATE console_sessions SET last_seen_at=?", (stamp,))
+            cstore.conn.commit()
+        return cstore.conn.execute("SELECT last_seen_at FROM console_sessions").fetchone()[0]
+    before = seen_at(timedelta(minutes=10))
+    assert c.get("/api/v1/jobs", headers={"X-GR-Background": "1"}).status_code == 200
+    assert seen_at() == before
+    assert c.get("/api/v1/jobs").status_code == 200
+    assert seen_at() > before
+    seen_at(timedelta(hours=13))
+    assert c.get("/api/v1/jobs", headers={"X-GR-Background": "1"}).status_code == 401

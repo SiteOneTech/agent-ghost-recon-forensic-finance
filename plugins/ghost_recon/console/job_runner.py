@@ -35,23 +35,31 @@ ESSENTIAL_WRITE_BACKOFF_S = (0.5, 1.0, 2.0, 4.0)
 NOTIFY_TIMEOUT_S = 60
 NOTIFY_ERROR_MAX = 300
 _MEDIA_RE = re.compile(r"MEDIA:", re.IGNORECASE)
+# The audit status words of the console UI (static/lib/format.js AUDIT_STATUS).
+AUDIT_STATUS_LABELS = {"open": "abierta", "in_progress": "en curso", "validated": "validada", "sealed": "sellada",
+                       "failed": "fallida"}
 logger = logging.getLogger(__name__)
 
 
 def notify_message(job: Dict[str, Any], status: str, case: Dict[str, Any], last_audit: Optional[Dict[str, Any]],
                    error: Optional[str]) -> str:
-    """The job-end notice: order, outcome, case and last audit, and the (redacted) reason of a failure. Text the
-    operator controls (case and folder names, the agent's error) can never turn into a ``MEDIA:`` attachment of
-    ``hermes send``, and the message always starts with a word, never with a flag."""
+    """The job-end notice: order, outcome, case and last audit (status in Spanish), and the first line of a failure's
+    reason, redacted and trimmed: a long stderr tail (client folder names, paths) never reaches the external channel.
+    Text the operator controls (case and folder names, the agent's error) can never turn into a ``MEDIA:`` attachment
+    of ``hermes send``, and the message always starts with a word, never with a flag."""
     verb = "terminó" if status == "succeeded" else "falló"
     order = commands.ORDER_LABELS.get(job["command"], job["command"])
     where = f"{case['name']} ({case['id']})" if case else Path(job["folder"]).name
     lines = [f"Ejecución #{job['id']} · {order} · {verb}", f"Caso: {where}"]
     if last_audit:
-        lines.append(f"Última auditoría: {ids.short_audit(last_audit['id'])} ({last_audit['status']})")
+        status_word = AUDIT_STATUS_LABELS.get(last_audit["status"], last_audit["status"])
+        lines.append(f"Última auditoría: {ids.short_audit(last_audit['id'])} ({status_word})")
     if error:
         from agent.redact import redact_sensitive_text
-        lines.append(f"Motivo: {redact_sensitive_text(str(error), force=True)[:NOTIFY_ERROR_MAX]}")
+        redacted = redact_sensitive_text(str(error), force=True)  # whole text first: a multi-line secret is seen whole
+        first_line = next((line.strip() for line in redacted.splitlines() if line.strip()), "")
+        if first_line:
+            lines.append(f"Motivo: {first_line[:NOTIFY_ERROR_MAX]}")
     return _MEDIA_RE.sub("MEDIA :", "\n".join(lines))
 
 

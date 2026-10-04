@@ -1,5 +1,6 @@
 """Hardening left over from H1 and H2: the lockout holds against a burst, last-seen bookkeeping never fails a read,
 an unhandled error keeps the envelope and the security headers, and a live stream stops for a user who lost access."""
+import contextlib
 import sqlite3
 import threading
 import time
@@ -7,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 
 from plugins.ghost_recon.console import auth as auth_mod
 from plugins.ghost_recon.console.auth import MAX_FAILURES, AuthError, AuthService, LoginLocked, Principal
+from plugins.ghost_recon.console.commands import CommandError
 from plugins.ghost_recon.console.settings import ConsoleSettings
 
 BURST = 12
@@ -94,10 +96,15 @@ def test_a_live_stream_stops_once_its_user_is_disabled(login_as, case_root, auth
     # The job never ends: the stream can only end because its watcher lost access while it was open. The safety
     # cancel ends it anyway (as "cancelled") if the stream never asks again, so a regression fails instead of hanging.
     threading.Timer(1.0, auth.set_disabled, args=("vera", True)).start()
-    safety = threading.Timer(20.0, jobs.cancel, args=(job["id"], Principal(1, "jean", "admin", "session")))
+    admin_principal = Principal(1, "jean", "admin", "session")
+    safety = threading.Timer(20.0, jobs.cancel, args=(job["id"], admin_principal))
     safety.start()
-    with viewer.stream("GET", f"/api/v1/jobs/{job['id']}/events/stream") as r:
-        text = "".join(r.iter_text())
-    safety.cancel()
-    assert "event: status" in text and text.rstrip().endswith('{"status": "unauthenticated"}')
-    assert admin.post(f"/api/v1/jobs/{job['id']}/cancel").status_code == 200
+    try:
+        with viewer.stream("GET", f"/api/v1/jobs/{job['id']}/events/stream") as r:
+            text = "".join(r.iter_text())
+        assert "event: status" in text and text.rstrip().endswith('{"status": "unauthenticated"}')
+        assert admin.post(f"/api/v1/jobs/{job['id']}/cancel").status_code == 200
+    finally:  # the hang-case agent never ends by itself: stop it whatever failed above
+        safety.cancel()
+        with contextlib.suppress(CommandError):  # already cancelled above (or by the safety timer)
+            jobs.cancel(job["id"], admin_principal)

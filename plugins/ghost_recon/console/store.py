@@ -418,11 +418,19 @@ class ConsoleStore:
             row["include_unsealed"] = bool(row["include_unsealed"])
         return row
 
-    def list_exports(self, *, statuses: Iterable[str] = (), limit: int = 1000) -> List[Dict[str, Any]]:
+    def list_exports(self, *, statuses: Iterable[str] = (), case_id: str = "",
+                     limit: int = 1000) -> List[Dict[str, Any]]:
         """Newest first."""
         statuses = tuple(statuses)
-        where = f" WHERE status IN ({','.join('?' * len(statuses))})" if statuses else ""
-        rows = self._all(f"SELECT * FROM console_exports{where} ORDER BY id DESC LIMIT ?", (*statuses, int(limit)))
+        clauses, args = [], []
+        if statuses:
+            clauses.append(f"status IN ({','.join('?' * len(statuses))})")
+            args += statuses
+        if case_id:
+            clauses.append("case_id=?")
+            args.append(case_id)
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        rows = self._all(f"SELECT * FROM console_exports{where} ORDER BY id DESC LIMIT ?", (*args, int(limit)))
         for row in rows:
             row["include_unsealed"] = bool(row["include_unsealed"])
         return rows
