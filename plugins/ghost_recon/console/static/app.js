@@ -9,6 +9,8 @@ import * as job from "./views/job.js";
 import * as jobs from "./views/jobs.js";
 import * as login from "./views/login.js";
 import * as system from "./views/system.js";
+import * as users from "./views/users.js";
+import * as wizard from "./views/wizard.js";
 
 const state = { user: null };
 let leaving = [];
@@ -22,6 +24,8 @@ const ROUTES = [
   { re: /^\/jobs$/, view: jobs, nav: "jobs" },
   { re: /^\/jobs\/(\d+)$/, view: job, nav: "jobs" },
   { re: /^\/system$/, view: system, nav: "system" },
+  { re: /^\/system\/users$/, view: users, nav: "system" },
+  { re: /^\/new$/, view: wizard, nav: null },
 ];
 
 const NAV = [
