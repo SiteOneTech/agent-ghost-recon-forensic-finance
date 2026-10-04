@@ -235,22 +235,18 @@ class Normalizer:
             return []
         try:
             obj = json.loads(line)
-        except ValueError:
-            obj = None
-        if not isinstance(obj, dict):
-            return self._emit("warning", "Línea no reconocida en la salida del agente", detail=line, level="warning")
-        return self.feed(obj)
+            if not isinstance(obj, dict):
+                return self._emit("warning", "Línea no reconocida en la salida del agente", detail=line, level="warning")
+            return self.feed(obj)
+        except Exception as e:
+            # Any exception from parsing (RecursionError, etc.) or handler execution (malformed field values,
+            # out-of-range timestamps, wrong types on nested fields, etc.) becomes a warning. This keeps the
+            # stream processing alive even on odd JSON records.
+            return self._emit("warning", "Evento del agente ilegible", detail=type(e).__name__, level="warning")
 
     def feed(self, obj: Dict[str, Any]) -> List[Event]:
         handler = self._handlers.get(str(obj.get("type")))
-        if not handler:
-            return []
-        try:
-            return handler(obj)
-        except Exception as e:
-            # Any exception from handler (malformed field values, out-of-range data, etc.) becomes a warning.
-            # This keeps the stream processing alive even on odd but syntactically-valid JSON records.
-            return self._emit("warning", "Evento del agente ilegible", detail=type(e).__name__, level="warning")
+        return handler(obj) if handler else []
 
     def flush(self) -> List[Event]:
         group, self._group = self._group, None

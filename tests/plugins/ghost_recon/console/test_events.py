@@ -160,10 +160,7 @@ def test_malformed_field_values_never_raise():  # Finding 1: guard against excep
 
 def test_truncated_gr_swarm_plan_uses_task_count_from_args_as_fallback():  # Finding 2: swarm total survives truncation
     truncated_plan = json.dumps({"mode": "extraction", "tasks": [{}] * 5})[:5000] + "..."
-    # gr_swarm_plan with 5 tasks in args, truncated output
-    _, events = run(call("gr_swarm_plan", {"audit_id": "a", "mode": "extraction", "tasks": [{}, {}, {}, {}, {}]},
-                         truncated_plan, 1))
-    # delegate_task calls afterwards should show progress against the extracted or fallback total
+    # delegate_task calls should show progress against the fallback total from args
     _, events_with_delegates = run(
         call("gr_swarm_plan", {"audit_id": "a", "mode": "extraction", "tasks": [{}, {}, {}, {}, {}]}, truncated_plan, 1)
         + call("delegate_task", {"tasks": [{}, {}]}, "ok", 2)
@@ -172,3 +169,26 @@ def test_truncated_gr_swarm_plan_uses_task_count_from_args_as_fallback():  # Fin
     # should show "2/5" and "3/5", not "2/0"
     assert any("2/5" in t for t in swarm_progress), f"Expected '2/5' in progress titles, got {swarm_progress}"
     assert any("3/5" in t for t in swarm_progress), f"Expected '3/5' in progress titles, got {swarm_progress}"
+
+
+def test_deeply_nested_and_non_string_ids_never_raise():  # Finding 1: comprehensive exception coverage
+    n = Normalizer()
+    # deeply nested JSON that causes RecursionError in json.loads
+    events1 = n.feed_line('[' * 100000)
+    assert len(events1) == 1 and events1[0]["level"] == "warning"
+    # deeply nested JSON object
+    events2 = n.feed_line('{"a":' * 100000)
+    assert len(events2) == 1 and events2[0]["level"] == "warning"
+    # gr_audit_start with non-string audit id (causes AttributeError in _seq)
+    events3 = n.feed_line(json.dumps(rec("tool_use", 1, name="gr_audit_start", tool_call_id="c1", input={})))
+    events3 += n.feed_line(json.dumps(rec("tool_result", 1, name="gr_audit_start", tool_call_id="c1",
+                                          output='{"audit": {"id": 7}}', duration_ms=1, is_error=False)))
+    assert any(e["level"] == "warning" for e in events3)
+    # gr_review_plan with non-string review_id (causes AttributeError in _seq)
+    events4 = n.feed_line(json.dumps(rec("tool_use", 2, name="gr_review_plan", tool_call_id="c2", input={})))
+    events4 += n.feed_line(json.dumps(rec("tool_result", 2, name="gr_review_plan", tool_call_id="c2",
+                                          output='{"review_id": 3}', duration_ms=1, is_error=False)))
+    assert any(e["level"] == "warning" for e in events4)
+    # normal line afterwards is still normalized
+    events5 = n.feed_line(json.dumps(rec("result", 3, session_id="s", exit_code=0, text="ok")))
+    assert len(events5) == 1 and events5[0]["kind"] == "result" and events5[0]["level"] == "info"
