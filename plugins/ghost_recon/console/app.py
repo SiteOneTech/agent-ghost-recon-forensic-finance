@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import mimetypes
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -18,9 +19,11 @@ from ..core.db import Store
 from . import CONSOLE_VERSION
 from .auth import AuthService
 from .deps import ConsoleContext, current_principal
+from .exports import ExportService
+from .housekeeping import Housekeeping
 from .jobs import JobService
-from .routers import (audits as audits_routes, auth as auth_routes, cases as cases_routes, fs as fs_routes,
-                      jobs as jobs_routes, system as system_routes, users as users_routes)
+from .routers import (audits as audits_routes, auth as auth_routes, cases as cases_routes, exports as exports_routes,
+                      fs as fs_routes, jobs as jobs_routes, search as search_routes, system as system_routes, users as users_routes)
 from .settings import ConsoleSettings
 from .store import ConsoleStore
 
@@ -38,7 +41,11 @@ SECURITY_HEADERS = {
     "X-Frame-Options": "DENY",
     "Cross-Origin-Opener-Policy": "same-origin",
 }
-ROUTERS = (auth_routes, system_routes, cases_routes, audits_routes, fs_routes, jobs_routes, users_routes)
+ROUTERS = (auth_routes, system_routes, cases_routes, audits_routes, fs_routes, jobs_routes, users_routes,
+           exports_routes, search_routes)
+INTERNAL_ERROR = {"error": {"code": "internal",
+                            "message": "error interno de la consola; el detalle quedó en el log del servidor"}}
+logger = logging.getLogger(__name__)
 
 
 def host_allowed(host_header: str, settings: ConsoleSettings) -> bool:
@@ -52,28 +59,44 @@ def host_allowed(host_header: str, settings: ConsoleSettings) -> bool:
 
 
 def create_app(settings: ConsoleSettings, store: Store, cstore: ConsoleStore, *,
-               auth: Optional[AuthService] = None, jobs: Optional[JobService] = None) -> FastAPI:
+               auth: Optional[AuthService] = None, jobs: Optional[JobService] = None,
+               exports: Optional[ExportService] = None, housekeeping: Optional[Housekeeping] = None) -> FastAPI:
     jobs = jobs or JobService(cstore, store, settings)
+    exports = exports or ExportService(cstore, store, settings)
+    housekeeping = housekeeping or Housekeeping(cstore, settings, exports_dir=exports.dir, jobs_dir=jobs.jobs_dir)
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
-        jobs.start()  # find running jobs again, mark orphans, dispatch the queue; then tick in the background
+        # (start, stop) in start order; whatever began is stopped in reverse, even if a later start fails
+        steps = [(jobs.start, jobs.stop),  # find running jobs again, mark orphans, dispatch the queue
+                 (exports.start, exports.stop),  # fail the builds a previous server left unfinished; then build
+                 (housekeeping.start, housekeeping.stop)]  # sessions, old ZIPs, old job files: now, then hourly
+        began = []
         try:
+            for start, stop in steps:
+                began.append(stop)
+                start()
             yield
         finally:
-            jobs.stop()
+            for stop in reversed(began):
+                stop()
 
     app = FastAPI(title="Ghost Recon Console", version=CONSOLE_VERSION, docs_url=None, redoc_url=None,
                   openapi_url=None, lifespan=lifespan)
     app.state.gr = ConsoleContext(settings=settings, store=store, cstore=cstore,
-                                  auth=auth or AuthService(cstore, settings), jobs=jobs)
+                                  auth=auth or AuthService(cstore, settings), jobs=jobs, exports=exports)
 
     @app.middleware("http")
     async def guard(request: Request, call_next):
-        if host_allowed(request.headers.get("host", ""), settings):
-            response = await call_next(request)
-        else:
+        if not host_allowed(request.headers.get("host", ""), settings):
             response = JSONResponse({"error": {"code": "bad_host", "message": "host no permitido"}}, status_code=400)
+        else:
+            try:
+                response = await call_next(request)
+            except Exception:
+                # Starlette's last-resort handler answers outside this middleware: plain text, no security headers.
+                logger.exception("ghost-recon console: unhandled error on %s %s", request.method, request.url.path)
+                response = JSONResponse(INTERNAL_ERROR, status_code=500)
         for key, value in SECURITY_HEADERS.items():
             response.headers.setdefault(key, value)
         path = request.url.path

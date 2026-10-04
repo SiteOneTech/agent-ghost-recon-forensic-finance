@@ -1,4 +1,5 @@
-"""``console_*`` tables in the Ghost Recon DB: users, sessions, API tokens, audit log and the seal-check cache.
+"""``console_*`` tables in the Ghost Recon DB: users, sessions, API tokens, audit log, seal-check cache, jobs and
+exports.
 
 The console opens its OWN connection to the same SQLite file (WAL), so it never shares a connection or lock with
 the case ``Store``. Case tables are only read here, for cross-case queries the case ``Store`` does not offer.
@@ -14,17 +15,22 @@ from typing import Any, Dict, Iterable, List, Optional
 
 from ..core.db import connect, migrate as migrate_case_schema, utcnow
 
-CONSOLE_SCHEMA_VERSION = 2
+CONSOLE_SCHEMA_VERSION = 3
 ROLES = ("viewer", "admin")
 JOB_COMMANDS = ("new-open-case", "rerun-case", "review-case")
 JOB_STATUSES = ("queued", "running", "succeeded", "failed", "cancelled", "orphaned")
 ACTIVE_STATUSES = ("queued", "running")
 TERMINAL_STATUSES = ("succeeded", "failed", "cancelled", "orphaned")
-_JSON_COLS = ("detail", "ref", "args", "argv", "tokens")
+EXPORT_SCOPES = ("case", "audit")
+EXPORT_STATUSES = ("queued", "building", "succeeded", "failed", "expired")
+EXPORT_PENDING = ("queued", "building")
+_JSON_COLS = ("detail", "ref", "args", "argv", "tokens", "notify_argv")
 _USER_FIELDS = frozenset({"password_hash", "disabled", "last_login_at", "role"})
 _JOB_FIELDS = frozenset({"case_id", "context_file", "status", "pid", "pid_started", "runner_pid", "runner_started",
                          "session_id", "exit_code", "started_at", "finished_at", "result_text", "tokens", "error",
                          "phase", "notify_target"})
+_EXPORT_FIELDS = frozenset({"status", "files_total", "files_done", "size", "sha256", "file_name", "error", "detail",
+                            "started_at", "finished_at"})
 
 CONSOLE_SCHEMA = [
     "CREATE TABLE IF NOT EXISTS console_schema_version (version INTEGER NOT NULL)",
@@ -111,23 +117,65 @@ CONSOLE_MIGRATIONS: Dict[int, List[str]] = {
         "CREATE INDEX IF NOT EXISTS console_jobs_status ON console_jobs(status)",
         "CREATE INDEX IF NOT EXISTS console_jobs_case ON console_jobs(case_id)",
     ],
+    3: [
+        """CREATE TABLE IF NOT EXISTS console_exports (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            case_id TEXT NOT NULL,
+            scope TEXT NOT NULL CHECK (scope IN ('case', 'audit')),
+            seq TEXT,
+            include_unsealed INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'queued'
+                CHECK (status IN ('queued', 'building', 'succeeded', 'failed', 'expired')),
+            files_total INTEGER NOT NULL DEFAULT 0,
+            files_done INTEGER NOT NULL DEFAULT 0,
+            size INTEGER,
+            sha256 TEXT,
+            file_name TEXT,
+            error TEXT,
+            detail TEXT NOT NULL DEFAULT '{}',
+            created_by TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            started_at TEXT,
+            finished_at TEXT
+        )""",
+        "CREATE INDEX IF NOT EXISTS console_exports_case ON console_exports(case_id)",
+        # The ``hermes send`` argv of the job-end notice, planned by the server at launch like ``argv``.
+        "ALTER TABLE console_jobs ADD COLUMN notify_argv TEXT NOT NULL DEFAULT '[]'",
+    ],
 }
+
+
+def _stored_version(conn: sqlite3.Connection) -> Optional[int]:
+    row = conn.execute("SELECT version FROM console_schema_version").fetchone()
+    return int(row[0]) if row is not None else None
 
 
 def migrate_console(conn: sqlite3.Connection) -> int:
     """Idempotent and versioned: the v1 baseline, then every migration above the stored version, then the new
-    version in the one-row ``console_schema_version`` table."""
+    version in the one-row ``console_schema_version`` table.
+
+    The server, its runners and the CLI may open the database at the same moment, and a step such as ``ALTER TABLE``
+    cannot run twice. So the steps run inside ``BEGIN IMMEDIATE`` after reading the version again: a second migrator
+    waits for the first one's commit and then finds nothing left to do."""
     for stmt in CONSOLE_SCHEMA:
         conn.execute(stmt)
-    row = conn.execute("SELECT version FROM console_schema_version").fetchone()
-    if row is None:
-        conn.execute("INSERT INTO console_schema_version(version) VALUES (1)")
-    current = int(row[0]) if row is not None else 1
-    for version in sorted(v for v in CONSOLE_MIGRATIONS if v > current):
-        for stmt in CONSOLE_MIGRATIONS[version]:
-            conn.execute(stmt)
-        conn.execute("UPDATE console_schema_version SET version=?", (version,))
     conn.commit()
+    if (_stored_version(conn) or 0) >= CONSOLE_SCHEMA_VERSION:
+        return CONSOLE_SCHEMA_VERSION
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        current = _stored_version(conn)
+        if current is None:
+            conn.execute("INSERT INTO console_schema_version(version) VALUES (1)")
+            current = 1
+        for version in sorted(v for v in CONSOLE_MIGRATIONS if v > current):
+            for stmt in CONSOLE_MIGRATIONS[version]:
+                conn.execute(stmt)
+            conn.execute("UPDATE console_schema_version SET version=?", (version,))
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
     return CONSOLE_SCHEMA_VERSION
 
 
@@ -247,6 +295,12 @@ class ConsoleStore:
     def revoke_user_sessions(self, user_id: int) -> None:
         self._update("UPDATE console_sessions SET revoked=1 WHERE user_id=?", (user_id,))
 
+    def purge_sessions(self, *, now: str, idle_before: str) -> int:
+        """Delete revoked sessions and the ones past their absolute or idle expiry; the number deleted. The stamps
+        are ISO-8601 UTC strings in one format, so text order is time order."""
+        return self._update("DELETE FROM console_sessions WHERE revoked=1 OR expires_at <= ? OR last_seen_at < ?",
+                            (now, idle_before))
+
     # ---------------------------------------------------------------- API tokens
     def create_token(self, *, user_id: int, name: str, token_sha256: str, prefix: str) -> int:
         return self._insert("INSERT INTO console_tokens(user_id, name, token_sha256, prefix, created_at) VALUES (?,?,?,?,?)",
@@ -297,13 +351,15 @@ class ConsoleStore:
 
     # ---------------------------------------------------------------- jobs
     def create_job(self, *, command: str, folder: str, args: Dict[str, Any], argv: List[str], launched_by: str,
-                   context_file: Optional[str] = None, case_id: Optional[str] = None) -> Dict[str, Any]:
+                   context_file: Optional[str] = None, case_id: Optional[str] = None,
+                   notify_target: Optional[str] = None, notify_argv: Optional[List[str]] = None) -> Dict[str, Any]:
         if command not in JOB_COMMANDS:
             raise ValueError(f"orden desconocida: {command}")
         job_id = self._insert(
             "INSERT INTO console_jobs(command, case_id, folder, args, argv, context_file, status, launched_by,"
-            " created_at) VALUES (?,?,?,?,?,?,'queued',?,?)",
-            (command, case_id, folder, _j(args), _j([str(a) for a in argv]), context_file, launched_by, utcnow()))
+            " created_at, notify_target, notify_argv) VALUES (?,?,?,?,?,?,'queued',?,?,?,?)",
+            (command, case_id, folder, _j(args), _j([str(a) for a in argv]), context_file, launched_by, utcnow(),
+             notify_target or None, _j([str(a) for a in notify_argv or []])))
         return self.get_job(job_id)
 
     def get_job(self, job_id: int) -> Dict[str, Any]:
@@ -345,3 +401,50 @@ class ConsoleStore:
         if expect:
             sql += f" AND status IN ({','.join('?' * len(expect))})"
         return self._update(sql, (*values, int(job_id), *expect)) > 0
+
+    # ---------------------------------------------------------------- exports
+    def create_export(self, *, case_id: str, scope: str, seq: Optional[str], include_unsealed: bool,
+                      created_by: str) -> Dict[str, Any]:
+        if scope not in EXPORT_SCOPES:
+            raise ValueError(f"alcance desconocido: {scope}")
+        export_id = self._insert(
+            "INSERT INTO console_exports(case_id, scope, seq, include_unsealed, status, created_by, created_at)"
+            " VALUES (?,?,?,?,'queued',?,?)", (case_id, scope, seq, 1 if include_unsealed else 0, created_by, utcnow()))
+        return self.get_export(export_id)
+
+    def get_export(self, export_id: int) -> Dict[str, Any]:
+        row = self._one("SELECT * FROM console_exports WHERE id=?", (int(export_id),))
+        if row:
+            row["include_unsealed"] = bool(row["include_unsealed"])
+        return row
+
+    def list_exports(self, *, statuses: Iterable[str] = (), case_id: str = "",
+                     limit: int = 1000) -> List[Dict[str, Any]]:
+        """Newest first."""
+        statuses = tuple(statuses)
+        clauses, args = [], []
+        if statuses:
+            clauses.append(f"status IN ({','.join('?' * len(statuses))})")
+            args += statuses
+        if case_id:
+            clauses.append("case_id=?")
+            args.append(case_id)
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        rows = self._all(f"SELECT * FROM console_exports{where} ORDER BY id DESC LIMIT ?", (*args, int(limit)))
+        for row in rows:
+            row["include_unsealed"] = bool(row["include_unsealed"])
+        return rows
+
+    def update_export(self, export_id: int, *, expect: Iterable[str] = (), **fields: Any) -> bool:
+        """Update an export; with ``expect``, only while its status is one of those. True when the row matched."""
+        unknown = set(fields) - _EXPORT_FIELDS
+        if unknown or not fields:
+            raise ValueError(f"campos no editables: {sorted(unknown) or 'ninguno'}")
+        if "status" in fields and fields["status"] not in EXPORT_STATUSES:
+            raise ValueError(f"estado inválido: {fields['status']}")
+        expect = tuple(expect)
+        values = [_j(v) if k == "detail" else v for k, v in fields.items()]
+        sql = f"UPDATE console_exports SET {', '.join(f'{k}=?' for k in fields)} WHERE id=?"
+        if expect:
+            sql += f" AND status IN ({','.join('?' * len(expect))})"
+        return self._update(sql, (*values, int(export_id), *expect)) > 0

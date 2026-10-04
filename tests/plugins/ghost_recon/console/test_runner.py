@@ -260,6 +260,7 @@ def _kill_and_check(runner, tree, wait_until):
 
 
 @pytest.mark.platforms("posix")
+@pytest.mark.live_system_guard_bypass  # kill_tree may outlive the agent: its grandchild is reparented to init first
 def test_the_detached_runner_leads_its_session_and_dies_with_its_tree_posix(cstore, evidence, fake_agent, wait_until):
     runner, tree = _hanging_tree(cstore, evidence, fake_agent, wait_until)
     assert os.getsid(runner.pid) == runner.pid  # start_new_session: a server restart cannot signal it

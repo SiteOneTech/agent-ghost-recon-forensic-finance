@@ -8,8 +8,10 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import logging
 import re
 import secrets
+import sqlite3
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -17,6 +19,8 @@ from typing import Callable, Dict, List, Optional, Tuple
 
 from .settings import ConsoleSettings
 from .store import ROLES, ConsoleStore
+
+logger = logging.getLogger(__name__)
 
 _SCRYPT = {"n": 2 ** 15, "r": 8, "p": 1}
 _SCRYPT_MAXMEM = 64 * 1024 * 1024
@@ -125,6 +129,7 @@ class AuthService:
         self.clock = clock
         self._failures: Dict[str, List[datetime]] = {}
         self._locked_until: Dict[str, datetime] = {}
+        self._attempts = threading.Lock()  # serialises the lockout bookkeeping (_failures, _locked_until)
         self._last_admin_lock = threading.Lock()  # protects last-admin checks from concurrent demote/disable
 
     # ------------------------------------------------------------------ accounts
@@ -179,19 +184,23 @@ class AuthService:
         uname = (username or "").strip().lower()
         keys = [f"u:{uname}", f"ip:{ip}"]
         now = self.clock()
-        for key in keys:
-            until = self._locked_until.get(key)
-            if until and until > now:
-                raise LoginLocked(int((until - now).total_seconds()) + 1)
+        with self._attempts:
+            for key in keys:
+                until = self._locked_until.get(key)
+                if until and until > now:
+                    raise LoginLocked(int((until - now).total_seconds()) + 1)
+            # The attempt counts before the slow scrypt check: a burst of parallel guesses is held to the window,
+            # instead of every guess passing the lock check while the earlier ones are still hashing.
+            self._register_failure(keys, now)
         user = self.cstore.get_user(uname)
         valid = verify_password(password or "", user["password_hash"] if user else _equalising_hash())
         if not (user and valid and not user["disabled"]):
-            self._register_failure(keys, now)
             self.cstore.log("login_failed", username=uname, ip=ip)
             raise AuthError("usuario o contraseña incorrectos")
-        for key in keys:
-            self._failures.pop(key, None)
-            self._locked_until.pop(key, None)
+        with self._attempts:
+            for key in keys:
+                self._failures.pop(key, None)
+                self._locked_until.pop(key, None)
         raw = secrets.token_urlsafe(32)
         csrf = secrets.token_urlsafe(24)
         sid = self.cstore.create_session(user_id=user["id"], token_sha256=_sha(raw), csrf_token=csrf,
@@ -209,7 +218,9 @@ class AuthService:
                 recent = []
             self._failures[key] = recent
 
-    def resolve_session(self, raw: str) -> Optional[Principal]:
+    def resolve_session(self, raw: str, *, touch: bool = True) -> Optional[Principal]:
+        """The session's principal while it is neither revoked, idle past ``session_idle_hours`` nor past its absolute
+        expiry. ``touch=False`` (background polls, the stream's re-check) leaves last-seen alone."""
         if not raw:
             return None
         s = self.cstore.get_session(_sha(raw))
@@ -221,9 +232,18 @@ class AuthService:
         idle = now - _parse(s["last_seen_at"])
         if idle > timedelta(hours=self.settings.session_idle_hours):
             return None
-        if idle >= TOUCH_EVERY:
-            self.cstore.touch_session(s["id"], _iso(now))
+        if touch and idle >= TOUCH_EVERY:
+            self._touch(self.cstore.touch_session, s["id"], _iso(now))
         return Principal(s["user_id"], s["username"], s["role"], "session", s["id"], s["csrf_token"])
+
+    @staticmethod
+    def _touch(write: Callable[[int, str], None], row_id: int, ts: str) -> None:
+        """Last-seen bookkeeping is best effort: a busy database must never turn an authenticated read into an
+        error (the next request retries the write)."""
+        try:
+            write(row_id, ts)
+        except sqlite3.Error as exc:
+            logger.debug("ghost-recon console: last-seen update skipped: %s", exc)
 
     def logout(self, principal: Principal, ip: str = "") -> None:
         if principal.session_id:
@@ -247,15 +267,15 @@ class AuthService:
                         detail={"name": label, "user": user["username"]})
         return raw, {"id": token_id, "prefix": prefix, "name": label}
 
-    def resolve_bearer(self, raw: str) -> Optional[Principal]:
+    def resolve_bearer(self, raw: str, *, touch: bool = True) -> Optional[Principal]:
         if not raw or not raw.startswith(f"{TOKEN_PREFIX}_"):
             return None
         t = self.cstore.get_token(_sha(raw))
         if not t or t["revoked"] or t["disabled"]:
             return None
         now = self.clock()
-        if not t["last_used_at"] or now - _parse(t["last_used_at"]) >= TOUCH_EVERY:
-            self.cstore.touch_token(t["id"], _iso(now))
+        if touch and (not t["last_used_at"] or now - _parse(t["last_used_at"]) >= TOUCH_EVERY):
+            self._touch(self.cstore.touch_token, t["id"], _iso(now))
         return Principal(t["user_id"], t["username"], t["role"], "token")
 
     def revoke_api_token(self, token_id: int, *, actor: Optional[Principal] = None, ip: str = "") -> bool:

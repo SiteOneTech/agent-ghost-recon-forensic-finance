@@ -20,9 +20,11 @@ def get_case_or_404(ctx: ConsoleContext, case_id: str) -> dict:
 
 
 @router.get("/cases")
-def list_cases(q: str = "", status: str = "", _: Principal = Depends(require("viewer")),
+def list_cases(q: str = "", status: str = "", risk: str = "", _: Principal = Depends(require("viewer")),
                ctx: ConsoleContext = Depends(get_ctx)):
-    return {"items": readmodel.list_cases(ctx.store, ctx.cstore, q=q, status=status)}
+    if risk not in ("", "any", *readmodel.RISKS):
+        raise ApiError(422, "invalid_argument", f"riesgo desconocido: {risk} (any, {', '.join(readmodel.RISKS)})")
+    return {"items": readmodel.list_cases(ctx.store, ctx.cstore, q=q, status=status, risk=risk)}
 
 
 @router.get("/cases/{case_id}")
@@ -34,7 +36,7 @@ def case_detail(case_id: str, _: Principal = Depends(require("viewer")), ctx: Co
 def case_timeline(case_id: str, _: Principal = Depends(require("viewer")), ctx: ConsoleContext = Depends(get_ctx)):
     get_case_or_404(ctx, case_id)
     t = service.timeline(ctx.store, case_id)
-    return {"items": sorted(t["events"], key=lambda e: (e["ts"], e["id"]), reverse=True), "audits": t["audits"],
+    return {"items": readmodel.timeline_rows(ctx.store, case_id, readmodel.TableFilters()), "audits": t["audits"],
             "findings_evolution": t["findings_evolution"]}
 
 
@@ -42,8 +44,8 @@ def case_timeline(case_id: str, _: Principal = Depends(require("viewer")), ctx: 
 def findings(case_id: str, kind: str = "", risk: str = "", status: str = "", q: str = "",
              _: Principal = Depends(require("viewer")), ctx: ConsoleContext = Depends(get_ctx)):
     get_case_or_404(ctx, case_id)
-    return {"items": readmodel.filter_findings(ctx.store.list_findings(case_id), kind=kind, risk=risk,
-                                               status=status, q=q)}
+    filters = readmodel.TableFilters(kind=kind, risk=risk, status=status, q=q)
+    return {"items": readmodel.findings_rows(ctx.store, case_id, filters)}
 
 
 @router.get("/cases/{case_id}/findings/{finding_id}")
@@ -60,9 +62,7 @@ def finding(case_id: str, finding_id: str, _: Principal = Depends(require("viewe
 def evidence(case_id: str, status: str = "", audit: str = "", q: str = "", cursor: str = "", limit: int = 100,
              _: Principal = Depends(require("viewer")), ctx: ConsoleContext = Depends(get_ctx)):
     get_case_or_404(ctx, case_id)
-    rows = ctx.store.list_evidence(case_id, status=status or None,
-                                   first_audit_id=f"{case_id}/{audit}" if audit else None)
-    rows = readmodel.filter_evidence(rows, q=q)
+    rows = readmodel.evidence_rows(ctx.store, case_id, readmodel.TableFilters(status=status, audit=audit, q=q))
     items, next_cursor = readmodel.page(rows, cursor, limit)
     return {"items": items, "next_cursor": next_cursor, "total": len(rows)}
 
@@ -78,7 +78,7 @@ def evidence_stats(case_id: str, _: Principal = Depends(require("viewer")), ctx:
 @router.get("/cases/{case_id}/criteria")
 def criteria(case_id: str, _: Principal = Depends(require("viewer")), ctx: ConsoleContext = Depends(get_ctx)):
     get_case_or_404(ctx, case_id)
-    return {"items": ctx.store.list_criteria(case_id)}
+    return {"items": readmodel.criteria_rows(ctx.store, case_id, readmodel.TableFilters())}
 
 
 @router.get("/cases/{case_id}/research")

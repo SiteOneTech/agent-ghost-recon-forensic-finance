@@ -13,7 +13,31 @@ const AUDIT_STATUS = { open: "abierta", in_progress: "en curso", validated: "val
 const AUDIT_KIND = { initial: "inicial", rerun: "re-run", review: "revisión" };
 const FINDING_KIND = { exception: "excepción", anomaly: "anomalía", finding: "hallazgo", question: "pregunta" };
 
+const FINDING_STATUS = { open: "abierto", closed: "cerrado", downgraded: "degradado", upgraded: "elevado", superseded: "sustituido" };
+const EVIDENCE_STATUS = { NEW: "nuevo", REGISTERED: "registrado", MODIFIED: "modificado", DUP_PRIOR: "duplicado de una auditoría previa",
+  DUP_INTERNAL: "duplicado interno", DUP_CONTENT: "duplicado por contenido" };
+// The kinds gr_run_record accepts (tools.py), named like the job phases.
+const RUN_KIND = { intake: "intake", swarm: "enjambre", validation: "validación", research: "investigación",
+  build: "pack", review: "revisión" };
+const EVENT_LABEL = {
+  case_opened: "Caso abierto", case_reimported: "Caso re-importado", audit_started: "Auditoría iniciada",
+  audit_sealed: "Auditoría sellada", review_started: "Revisión iniciada", criterion_added: "Criterio añadido",
+  research: "Investigación", pack_built: "Paquete generado", evidence_modified: "Evidencia modificada",
+  results_exported: "Resultados exportados", console_job_launched: "Ejecución lanzada",
+  console_job_cancelled: "Ejecución cancelada", console_job_finished: "Ejecución terminada",
+};
+
+/** Timeline event type in Spanish; the run_<kind> family reads "Ejecución: <kind>", anything unknown stays raw. */
+export function eventLabel(type) {
+  if (EVENT_LABEL[type]) return EVENT_LABEL[type];
+  if (typeof type === "string" && type.startsWith("run_")) return `Ejecución: ${RUN_KIND[type.slice(4)] || type.slice(4)}`;
+  return type;
+}
+
 export const label = {
+  risk: (r) => RISK_LABEL[r] || r,
+  findingStatus: (s) => FINDING_STATUS[s] || s,
+  evidenceStatus: (s) => EVIDENCE_STATUS[s] || s,
   auditStatus: (s) => AUDIT_STATUS[s] || s,
   auditKind: (k) => AUDIT_KIND[k] || k,
   findingKind: (k) => FINDING_KIND[k] || k,
@@ -80,7 +104,21 @@ export function sealCheckChip(audit) {
   const check = audit.seal_check;
   if (!check) return chip("sin verificar", "info");
   const title = `verificado ${fmtDate(check.checked_at)} por ${check.checked_by || "—"}`;
-  return check.ok ? chip("sello OK", "ok", title) : chip("sello alterado", "risk-high", title);
+  return h("span", { class: "seal-check" },
+    check.ok ? chip("sello OK", "ok", title) : chip("sello alterado", "risk-high", title),
+    h("small", { class: "muted", title }, `verificado ${fmtAgo(check.checked_at)}`));
+}
+
+/** Relative time in Spanish: "hace un momento", "hace 5 min", "hace 3 h", "hace 2 días". */
+export function fmtAgo(iso) {
+  const seconds = secondsSince(iso);
+  if (seconds === null) return "—";
+  if (seconds < 60) return "hace un momento";
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `hace ${minutes} min`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 48) return `hace ${hours} h`;
+  return `hace ${Math.floor(hours / 24)} días`;
 }
 
 export function shortHash(sha) {

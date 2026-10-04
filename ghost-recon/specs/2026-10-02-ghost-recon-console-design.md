@@ -91,7 +91,12 @@ plugins/ghost_recon/console/
 ├── procs.py          procesos con Hermes: lanzador de la instalación, entorno del perfil, desacople, árbol (psutil)
 ├── jobfiles.py       archivos por ejecución (<id>.jsonl, .log, .events.jsonl, .runner.log), lectura incremental
 ├── events.py         normalización stream-json → eventos de consola + deducción de fases (puro)
-├── exporter.py       ZIP de resultados + EXPORT_MANIFEST.json; tablas CSV/XLSX
+├── exporter.py       ZIP de resultados: selección, verificación de sellos, empaquetado y EXPORT_MANIFEST.json
+├── exports.py        ExportService: cola y construcción en segundo plano, filas console_exports, recuperación
+├── tables.py         tablas del caso a CSV (UTF-8 con BOM) y XLSX
+├── integrity.py      archivo frente a sello (SEALED.json + hash del pack); caché de verificaciones
+├── downloads.py      respuestas de adjunto
+├── housekeeping.py   limpieza periódica: sesiones, ZIP vencidos, archivos de ejecuciones antiguas
 ├── search.py         búsqueda entre casos
 ├── cli.py            subcomandos serve | user | token (registrados bajo `hermes ghostrecon`)
 ├── routers/          auth.py system.py fs.py cases.py audits.py jobs.py users.py exports.py search.py
@@ -136,13 +141,17 @@ console_jobs       id PK (int), command (new-open-case|rerun-case|review-case), 
                    status (queued|running|succeeded|failed|cancelled|orphaned), pid, pid_started,
                    runner_pid, runner_started (create time: identidad frente a PID reciclados),
                    session_id, exit_code, launched_by, created_at, started_at, finished_at,
-                   result_text, tokens JSON, error, phase (última fase deducida), notify_target
+                   result_text, tokens JSON, error, phase (última fase deducida), notify_target,
+                   notify_argv JSON (el `hermes send` que el servidor planifica al lanzar)
 console_seal_checks  audit_id PK, ok (0/1), checked_at, checked_by, detail JSON
+console_exports    id PK, case_id, scope (case|audit), seq, include_unsealed (0/1),
+                   status (queued|building|succeeded|failed|expired), files_total, files_done, size, sha256,
+                   file_name, error, detail JSON, created_by, created_at, started_at, finished_at
 ```
 
 Sesiones y tokens se guardan solo como SHA-256. El token en claro se muestra una única vez.
 
-`console_schema_version` tiene una sola fila; `migrate()` aplica en orden las migraciones por encima de la versión guardada (v1 = tablas de H1, v2 = `console_jobs`).
+`console_schema_version` tiene una sola fila; `migrate()` aplica en orden las migraciones por encima de la versión guardada (v1 = tablas de H1, v2 = `console_jobs`, v3 = `console_exports` y `console_jobs.notify_argv`). Las migraciones corren bajo `BEGIN IMMEDIATE` tras releer la versión: el servidor, sus runners y el CLI pueden abrir la BD a la vez sin repetir un `ALTER TABLE`.
 
 caché de la última verificación de sello por auditoría.
 
@@ -255,10 +264,10 @@ Convenciones:
 | Auth | `POST /auth/login`, `POST /auth/logout`, `GET /auth/me` | — |
 | Sistema | `GET /system/overview` (indicadores de Inicio y actividad reciente), `GET /system/doctor` (equivalente a `/gr-doctor` + disco libre en las raíces), `GET /system/audit-log` | viewer · viewer · **admin** |
 | Carpetas | `GET /fs/roots`, `GET /fs/list?path=`, `GET /fs/search?q=`, `GET /fs/inspect?path=` | viewer |
-| Casos | `GET /cases?q=&status=`, `GET /cases/{id}`, `…/timeline`, `…/findings?kind=&risk=&status=&q=`, `…/findings/{fid}`, `…/evidence?status=&audit=&q=`, `…/evidence/stats`, `…/criteria`, `…/research`, `…/jobs` | viewer |
+| Casos | `GET /cases?q=&status=&risk=` (`risk` ∈ `any`, `critical`, `high`, `medium`, `low`: con hallazgos abiertos de ese riesgo), `GET /cases/{id}`, `…/timeline`, `…/findings?kind=&risk=&status=&q=`, `…/findings/{fid}`, `…/evidence?status=&audit=&q=`, `…/evidence/stats`, `…/criteria`, `…/research`, `…/jobs` | viewer |
 | Auditorías | `GET /cases/{id}/audits/{seq}`, `…/runs`, `POST …/verify`, `GET …/reports`, `GET …/reports/{rid}/download` | viewer |
 | Ejecuciones | `POST /jobs/preview`, `POST /jobs` → 202, `POST /jobs/{id}/cancel`, `GET /jobs?status=&case=`, `GET /jobs/{id}`, `GET /jobs/{id}/events?after=`, `GET /jobs/{id}/events/stream` (SSE), `GET /jobs/{id}/log` | **admin** para lanzar y cancelar; viewer para leer |
-| Exportación | `POST /cases/{id}/export` (`{scope: case\|audit, seq?, include_unsealed?}`) → 202 + `export_id`, `GET /exports/{eid}` (estado, tamaño, sha256), `GET /exports/{eid}/download`; `GET /cases/{id}/{table}.csv\|.xlsx?<filtros>` para `table ∈ {findings, evidence, timeline, criteria}` | viewer (exportar con `include_unsealed=true`: **admin**) |
+| Exportación | `GET /cases/{id}/export/preview?scope=&seq=&include_unsealed=` (qué entra y qué queda fuera, sin construir), `POST /cases/{id}/export` (`{scope: case\|audit, seq?, include_unsealed?}`) → 202 + `export_id`, `GET /exports/{eid}` (estado, progreso, tamaño, sha256 y `available`: si el ZIP sigue en disco), `GET /exports/{eid}/download`, `GET /exports/{eid}/sha256`; `GET /cases/{id}/{table}.csv\|.xlsx?<filtros>` para `table ∈ {findings, evidence, timeline, criteria}` | viewer (exportar con `include_unsealed=true` y leer el estado, el ZIP o el `.sha256` de una exportación DRAFT: **admin**) |
 | Búsqueda | `GET /search?q=&types=case,finding,evidence,criteria&limit=` | viewer |
 | Usuarios | `GET /users`, `POST /users`, `POST /users/{u}/password`, `POST /users/{u}/enable\|disable`, `POST /users/{u}/role`, `GET /tokens`, `POST /tokens` (el token en claro solo en esta respuesta), `POST /tokens/{id}/revoke` | **admin** (nadie se deshabilita ni se cambia el rol a sí mismo; el último admin activo no se puede deshabilitar ni degradar, con la comprobación serializada) |
 
@@ -336,15 +345,28 @@ Detalles transversales:
 
 ## 11. Exportación `.zip`
 
-- **Alcance:** el caso completo o una auditoría (A0n o R0n). Por defecto solo auditorías **selladas**. `include_unsealed=true` (solo admin) añade las abiertas, marcadas `DRAFT` en el manifiesto. Una auditoría con un job en curso nunca se incluye.
-- **Contenido:** la carpeta de resultados (`<audits_dir>/` o `--out`). Incluye `case.json`, `corpus_inventory.csv`, las carpetas de auditoría seleccionadas completas y `reviews/`, `_console/` (contextos combinados) y `EXPORT_MANIFEST.json`. **Nunca** incluye la evidencia original.
+- **Alcance:** el caso completo o una auditoría (A0n o R0n). Por defecto solo auditorías **selladas**. `include_unsealed=true` (solo admin; sin indicarlo vale `export_include_unsealed`, y solo para admins) añade las abiertas, marcadas `DRAFT` en el manifiesto. Mientras el caso tenga una ejecución en cola o en curso, sus auditorías abiertas nunca se incluyen (una sellada no cambia).
+- **Contenido:** la carpeta de resultados (`<audits_dir>/` o `--out`). Incluye `case.json`, `corpus_inventory.csv`, las carpetas de auditoría seleccionadas completas y `reviews/`, `_console/` (contextos combinados) y `EXPORT_MANIFEST.json`. **Nunca** incluye la evidencia original: solo se lee la carpeta de resultados, los enlaces simbólicos y las uniones NTFS no se siguen (quedan en `skipped` del manifiesto), cada archivo debe resolver dentro de esa carpeta y una carpeta de resultados que contenga la del caso se rechaza.
 - **Integridad:**
-  - antes de empaquetar se verifica cada sello; un sello roto **bloquea** la exportación y se informa qué archivo cambió;
-  - `EXPORT_MANIFEST.json` contiene `{export_id, case_id, scope, audits:[{id, sealed, seal_sha256, verified_at}], files:[{path, size, sha256}], exported_by, exported_at, generator: "Ghost Recon Console <versión>"}`;
-  - el SHA-256 del ZIP se calcula al terminar, se muestra en la consola y se guarda junto al ZIP como `.sha256`.
-- **Nombre y ruta:** `GhostRecon_<slug>_<scope>_<YYYYMMDD-HHMM>.zip` en `plugin_data_dir/ghost-recon/console/exports/`. Las exportaciones grandes se construyen en segundo plano, con ZIP64 y progreso por archivos. Se conservan las últimas 20 o 30 días (configurable).
+  - antes de empaquetar se verifica cada sello (la verificación queda en `console_seal_checks`); un sello roto **bloquea** la exportación y se informa qué archivo cambió. Al empaquetar, cada archivo sellado se vuelve a hashear: un cambio durante la construcción también la detiene. Nunca queda un ZIP a medias (`.part` y renombrado al final);
+  - `EXPORT_MANIFEST.json` contiene `{export_id, case_id, case_name, scope, seq, draft, audits:[{id, seq, kind, sealed, state (SEALED|DRAFT), seal_sha256, verified_at}], excluded:[{id, seq, reason}], skipped:[{path, reason}], files:[{path, size, sha256}], exported_by, exported_at, generator: "Ghost Recon Console <versión>"}`;
+  - el SHA-256 del ZIP se calcula al terminar, se muestra en la consola y se guarda junto al ZIP como `<zip>.sha256`, en formato `sha256sum -c` (`<hash>  <nombre>`, LF).
+- **Nombre y ruta:** `GhostRecon_<slug>_<scope>_<YYYYMMDD-HHMM>.zip` (hora UTC; `<scope>` es `case` o la secuencia, con `-DRAFT` si lleva auditorías abiertas; si ya existe uno con ese nombre, `_e<export_id>`) en `plugin_data_dir/ghost-recon/console/exports/`. Todas las exportaciones se construyen en segundo plano, una a la vez, con ZIP64 y progreso por archivos; un reinicio de la consola marca como fallidas las que quedaron a medias. Se conservan como mucho las últimas 20 y ninguna de más de 30 días (`export_retention`); la fila queda como `expired`.
 - **Trazabilidad:** cada exportación queda en `console_audit_log` y en el timeline del caso (`results_exported`, sha256 del ZIP).
-- **Tablas:** los CSV salen en UTF-8 con BOM, para que Excel abra bien los acentos. Los XLSX salen con openpyxl y metadatos "Ghost Recon", igual que el pack.
+- **Tablas:** los CSV salen en UTF-8 con BOM, para que Excel abra bien los acentos; un texto que empieza por `=`, `+`, `-`, `@`, tabulador o retorno de carro (y no es un número) lleva un apóstrofo delante para que nunca se ejecute como fórmula. Los XLSX salen con openpyxl y metadatos "Ghost Recon", igual que el pack; sin openpyxl la consola responde `503 xlsx_unavailable`.
+- **Descarga de entregables:** en una auditoría sellada el archivo se vuelve a hashear al descargarlo y debe coincidir con `SEALED.json` y con `reports.sha256`; si no, `409 hash_mismatch`. Toda descarga rechazada queda en `console_audit_log` como `report_download_denied`.
+- **Refinamientos de H3 (decididos al implementar):**
+  - el sello se juzga sobre los bytes que entran en el ZIP: el hash de su manifiesto debe igualar `seal_sha256` de la auditoría y los hashes que lleva son contra los que se comprueban los demás archivos; una ruta sellada que falta o que ahora es un enlace falla como `seal_broken`. La detección de enlaces vale en Python 3.11 (enlace simbólico o punto de reanálisis de Windows);
+  - el ZIP **no** se vuelve a hashear en cada descarga: vive en los datos del plugin, fuera de la carpeta de resultados y de la evidencia, y el `.sha256` más el manifiesto permiten al receptor comprobarlo. El `.sha256` se escribe de forma atómica; si falla, el ZIP también se borra;
+  - una exportación DRAFT (con auditorías abiertas) es solo de admin de principio a fin: crearla con `include_unsealed` (§8) y también leer su estado, su ZIP y su `.sha256`; un viewer recibe `403 forbidden` y cada descarga rechazada queda en `console_audit_log` como `export_download_denied`;
+  - una sola exportación pendiente por caso: mientras otra está en cola o construyéndose, la nueva se rechaza con `409 export_pending` (el error lleva `export_id`) y no crea fila; tras cada construcción se aplica la retención, así que `export_retention` se cumple entre las pasadas horarias de limpieza;
+  - una fila pendiente que este servicio ya no está construyendo (su construcción se rindió ante una BD bloqueada) no bloquea el caso: la siguiente petición la marca `failed` con código `interrupted` y sigue; los archivos que llegó a publicar se borran;
+  - mientras el caso tiene una ejecución en cola o en curso, `case.json` y `corpus_inventory.csv` tampoco entran (el agente puede estar reescribiéndolos): quedan en `skipped` con `job_running` y la vista previa los muestra en «Queda fuera»; solo se empaquetan archivos regulares (un FIFO, socket o dispositivo queda en `skipped`);
+  - solo lo que hace el usuario mantiene viva una sesión: los sondeos que la página hace sola (cabecera `X-GR-Background: 1`) y la nueva comprobación del SSE autentican y respetan la expiración, pero no renuevan `last_seen_at` (tampoco abrir o reconectar el SSE); una pestaña olvidada caduca tras `session_idle_hours` (12 h por defecto) y, al volver a entrar, el login explica que la sesión se cerró (por inactividad o porque un admin la cerró) y regresa a la ruta donde estaba;
+  - parar el servicio aborta la construcción en curso (termina `failed` con código `interrupted`, sin `.part`; la espera es acotada y no arranca otro trabajador); si un servicio falla al arrancar, se detienen los ya iniciados; la primera pasada de limpieza está protegida; los archivos servidos son nombres simples dentro de `exports/` y uno desaparecido responde 410; la auditoría y la cronología se escriben solo si ganó la escritura condicional del estado;
+  - búsqueda: el presupuesto de 2 s se comprueba entre casos; los hallazgos y la evidencia llevan un `meta` estructurado (hallazgo: tipo, riesgo, estado; evidencia: estado) que la UI muestra con etiquetas en español; todo 422 usa el sobre `{"error": …}`;
+  - aviso al terminar: el `hermes send` escribe en `<id>.runner.log` (nunca por una tubería); a los 60 s (`NOTIFY_TIMEOUT_S`) se mata todo el árbol de procesos y la espera posterior es acotada; es de mejor esfuerzo de principio a fin y una excepción al lanzarlo solo falla esa ejecución, el despacho sigue;
+  - `test_hermes_home_e2e.py` prueba la consola en un `HERMES_HOME` real sin `GHOSTRECON_DB`.
 
 ## 12. Configuración y CLI
 
@@ -357,7 +379,7 @@ Todo vive en `config.yaml` bajo `plugins.entries.ghost-recon.settings.console`. 
 | `max_parallel_jobs` | `2` | Límite global de ejecuciones |
 | `notify_target` | `""` | Destino de `hermes send` (p. ej. `telegram`); vacío = sin aviso por gateway |
 | `export_include_unsealed` | `false` | Valor por defecto del diálogo de exportación |
-| `export_retention` | `{count: 20, days: 30}` | Limpieza de ZIP antiguos |
+| `export_retention` | `{count: 20, days: 30}` | Limpieza de ZIP antiguos (como mucho los `count` más recientes y ninguno de más de `days` días) y de los archivos de ejecuciones terminadas hace más de `days` días |
 | `session_idle_hours` / `session_max_days` | `12` / `7` | Expiración de sesiones |
 | `dashboard_url` | `""` | Si existe, añade el enlace "Continuar en chat" al dashboard |
 
@@ -423,3 +445,5 @@ Se ejecutan con `scripts/run_tests.sh`, con `HERMES_HOME` temporal. Son contrato
 | R8 | Con `KillMode=control-group` (el valor por defecto de systemd), reiniciar el servicio mata las auditorías en curso | La unidad de la consola usa `KillMode=process` (H4 lo fija en el instalador; documentado en `COMMANDS.md` §3b) |
 | R9 | `max_concurrent_sessions` en `config.yaml` puede rechazar una ejecución | El runner la marca `failed` con el motivo en el log técnico; documentado en `COMMANDS.md` §3b |
 | R10 | Presupuesto de delegación de un solo disparo: las ejecuciones de la consola son sesiones `chat -q` limitadas por `delegation.oneshot_max_children` (por defecto 2), lo que deja sin enjambre ni validación A/B/C | Fijar 100 (fragmento de config, instaladores y comprobación de `/gr-doctor`); hallado en la ejecución R1 |
+| R11 | Un Excel en español usa `;` como separador de listas y abre un CSV con comas en una sola columna | El XLSX es el formato recomendado para Excel; documentado en `COMMANDS.md` §3b |
+| R12 | Las notificaciones del navegador exigen un contexto seguro (`https` o `localhost`) | Acceso por túnel SSH a `localhost` (C2); el interruptor se deshabilita con el motivo fuera de un contexto seguro |

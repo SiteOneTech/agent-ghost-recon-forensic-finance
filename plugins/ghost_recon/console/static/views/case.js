@@ -10,6 +10,7 @@ import * as jobs from "./case/jobs.js";
 import * as research from "./case/research.js";
 import * as summary from "./case/summary.js";
 import * as timeline from "./case/timeline.js";
+import { openExportDialog } from "./export.js";
 import { openLaunchDialog } from "./launch.js";
 
 const TABS = [
@@ -71,6 +72,8 @@ export async function render({ params, user }) {
   const tab = TABS.find((t) => t.id === tabId) || TABS[0];
   const verify = h("button", { class: "btn ghost", disabled: s.sealed_count === 0 }, "Verificar sellos");
   verify.addEventListener("click", () => verifySeals(detail, verify));
+  const exportZip = h("button", { class: "btn ghost", type: "button" }, "Exportar resultados (.zip)");
+  exportZip.addEventListener("click", () => openExportDialog({ caseId: c.id, caseName: c.name, audits: detail.audits, user }));
   const notice = verifyNotice();
   const body = h("div", { class: "tab-body" }, h("p", { class: "muted" }, "Cargando…"));
   const page = h("div", { class: "page" },
@@ -81,7 +84,7 @@ export async function render({ params, user }) {
         launchButton("▶ Re-run", "rerun-case", c, user, null),
         launchButton("▶ Review", "review-case", c, user, s.sealed_count === 0 ? "La revisión necesita una auditoría sellada." : null),
         verify,
-        h("button", { class: "btn ghost", disabled: true, title: "Próximamente" }, "Exportar resultados (.zip)"))),
+        exportZip)),
     notice,
     h("section", { class: "kpis" },
       kpi(s.audits_count, "Auditorías", sealChip(s.seal_state)),

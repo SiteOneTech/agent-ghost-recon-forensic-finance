@@ -21,7 +21,7 @@ function caseMark(entry) {
 }
 
 function filesText(entry) {
-  return `${entry.capped ? "más de " : ""}${entry.files} archivos`;
+  return `${entry.capped ? "más de " : ""}${entry.files} ${entry.files === 1 ? "archivo" : "archivos"}`;
 }
 
 function kv(pairs) {
@@ -89,7 +89,11 @@ export async function render({ user, onLeave }) {
       mount(box, crumbs(data.breadcrumb), here,
         data.items.length ? h("ul", { class: "folders" }, data.items.map((e) => folderRow(e))) : emptyState("No hay subcarpetas."));
     } catch (err) {
-      if (guard.isLatest(token)) mount(box, errorState(err));
+      // Never a dead end: the folder may have been moved or renamed since it was listed.
+      if (guard.isLatest(token)) {
+        mount(box, errorState(err), h("div", { class: "wizard-actions" },
+          h("button", { class: "btn ghost", type: "button", onclick: () => browse(null) }, "← Carpetas de casos")));
+      }
     }
   }
 

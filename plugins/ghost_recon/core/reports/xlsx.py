@@ -40,15 +40,13 @@ def _title(ws, text: str, subtitle: str):
     ws["A2"] = subtitle; ws["A2"].font = Font(italic=True, size=9, color="666666")
 
 
+# The characters openpyxl refuses to write (same set as its own ILLEGAL_CHARACTERS_RE); tab and line breaks stay.
+ILLEGAL_CHARACTERS_RE = re.compile(r"[\000-\010]|[\013-\014]|[\016-\037]")
+
+
 def _clean(v: Any) -> Any:
     """openpyxl refuses control characters (OCR / chat exports carry them); strip them from strings."""
-    if isinstance(v, str):
-        try:
-            from openpyxl.utils.cell import ILLEGAL_CHARACTERS_RE
-            return ILLEGAL_CHARACTERS_RE.sub("", v)
-        except Exception:
-            return v
-    return v
+    return ILLEGAL_CHARACTERS_RE.sub("", v) if isinstance(v, str) else v
 
 
 def _put(ws, row: int, values: List[Any], money_cols: Optional[List[int]] = None):

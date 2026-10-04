@@ -9,7 +9,7 @@ Vertical de **auditoría financiera forense autónoma** construido encima de [He
 | Ver cómo encaja todo (BD, carpeta del caso, flujos, enjambre, reportes) | [`ARCHITECTURE.md`](ARCHITECTURE.md) |
 | Saber qué hacen `/new-open-case`, `/rerun-case`, `/review-case`, `/gr-*`, `hermes ghostrecon` y las tools `gr_*` | [`COMMANDS.md`](COMMANDS.md) |
 | Instalar en la máquina autónoma | `bash ghost-recon/install.sh --tavily-key <KEY>` · Windows: `powershell -ExecutionPolicy Bypass -File ghost-recon\install.ps1 -TavilyKey <KEY>` |
-| Operar desde el navegador (consola web): lanzar auditorías, seguirlas en vivo y consultar casos | `case_roots` en `config.yaml`, `hermes ghostrecon user add <nombre> --role admin` y `hermes ghostrecon serve` → `http://localhost:9230` (por túnel desde otra PC) · [`COMMANDS.md`](COMMANDS.md) §3b · demo: `python ghost-recon/demo/console_demo.py` |
+| Operar desde el navegador (consola web): lanzar auditorías, seguirlas en vivo, consultar y buscar casos, exportar tablas y el `.zip` verificable de resultados | `case_roots` en `config.yaml`, `hermes ghostrecon user add <nombre> --role admin` y `hermes ghostrecon serve` → `http://localhost:9230` (por túnel desde otra PC) · [`COMMANDS.md`](COMMANDS.md) §3b · demo: `python ghost-recon/demo/console_demo.py` |
 | Probar sin modelo (ciclo completo en un caso sintético) | `python ghost-recon/demo/smoke_test.py` |
 | Correr los tests | `python -m pytest tests/plugins/ghost_recon tests/skills/test_ghost_recon_skills.py -q` |
 | Editar el código con las reglas del área | [`AGENTS.md`](AGENTS.md) |

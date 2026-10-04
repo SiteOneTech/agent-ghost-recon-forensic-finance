@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import unicodedata
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 from urllib.parse import quote
 
 from ..core import ids
@@ -80,13 +82,19 @@ def _recent_first(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return sorted(rows, key=lambda r: r["last_activity"] or "", reverse=True)
 
 
-def list_cases(store: Store, cstore: ConsoleStore, *, q: str = "", status: str = "") -> List[Dict[str, Any]]:
+def list_cases(store: Store, cstore: ConsoleStore, *, q: str = "", status: str = "",
+               risk: str = "") -> List[Dict[str, Any]]:
+    """``risk``: cases with open findings of that risk; ``any``: with any open finding (spec §10.3 "riesgo abierto")."""
     rows = [case_row(store, cstore, c) for c in store.list_cases()]
     if status:
         rows = [r for r in rows if r["status"] == status]
-    needle = q.strip().lower()
+    if risk == "any":
+        rows = [r for r in rows if r["open_total"] > 0]
+    elif risk:
+        rows = [r for r in rows if r["open_by_risk"].get(risk, 0) > 0]
+    needle = q.strip()
     if needle:
-        rows = [r for r in rows if any(needle in r[k].lower() for k in ("name", "id", "root_path"))]
+        rows = [r for r in rows if matches(r, needle, ("name", "id", "root_path"))]
     return _recent_first(rows)
 
 
@@ -112,20 +120,67 @@ def case_detail(store: Store, cstore: ConsoleStore, case: Dict[str, Any]) -> Dic
             "research_notes": len(store.list_research_notes(case["id"]))}
 
 
-def _matches(row: Dict[str, Any], needle: str, fields: Tuple[str, ...]) -> bool:
-    return any(needle in str(row.get(k) or "").lower() for k in fields)
+def fold(text: Any) -> str:
+    """Case- and accent-insensitive form of a text (NFKD without combining marks, casefolded): «Conciliación» and
+    «conciliacion» fold alike. Plain ASCII (most IDs, hashes and paths) skips the Unicode work."""
+    text = str(text or "")
+    if text.isascii():
+        return text.lower()
+    decomposed = unicodedata.normalize("NFKD", text)
+    return "".join(c for c in decomposed if not unicodedata.combining(c)).casefold()
+
+
+def matches(row: Dict[str, Any], needle: str, fields: Tuple[str, ...]) -> bool:
+    """``needle`` is a substring of any of the row's ``fields``, ignoring case and accents on both sides."""
+    folded = fold(needle)
+    return any(folded in fold(row.get(k)) for k in fields)
 
 
 def filter_findings(rows: List[Dict[str, Any]], *, kind: str = "", risk: str = "", status: str = "",
                     q: str = "") -> List[Dict[str, Any]]:
     needle = q.strip().lower()
     return [f for f in rows if (not kind or f["kind"] == kind) and (not risk or f["risk"] == risk)
-            and (not status or f["status"] == status) and (not needle or _matches(f, needle, FINDING_TEXT_FIELDS))]
+            and (not status or f["status"] == status) and (not needle or matches(f, needle, FINDING_TEXT_FIELDS))]
 
 
 def filter_evidence(rows: List[Dict[str, Any]], *, q: str = "") -> List[Dict[str, Any]]:
     needle = q.strip().lower()
-    return [e for e in rows if not needle or _matches(e, needle, EVIDENCE_TEXT_FIELDS)]
+    return [e for e in rows if not needle or matches(e, needle, EVIDENCE_TEXT_FIELDS)]
+
+
+@dataclass(frozen=True)
+class TableFilters:
+    """The filters of the case tables (findings: kind, risk, status, q; evidence: status, audit, q)."""
+    kind: str = ""
+    risk: str = ""
+    status: str = ""
+    q: str = ""
+    audit: str = ""
+
+
+def findings_rows(store: Store, case_id: str, f: TableFilters) -> List[Dict[str, Any]]:
+    return filter_findings(store.list_findings(case_id), kind=f.kind, risk=f.risk, status=f.status, q=f.q)
+
+
+def evidence_rows(store: Store, case_id: str, f: TableFilters) -> List[Dict[str, Any]]:
+    rows = store.list_evidence(case_id, status=f.status or None,
+                               first_audit_id=f"{case_id}/{f.audit}" if f.audit else None)
+    return filter_evidence(rows, q=f.q)
+
+
+def timeline_rows(store: Store, case_id: str, f: TableFilters) -> List[Dict[str, Any]]:
+    """Newest first."""
+    return sorted(store.list_events(case_id), key=lambda e: (e["ts"], e["id"]), reverse=True)
+
+
+def criteria_rows(store: Store, case_id: str, f: TableFilters) -> List[Dict[str, Any]]:
+    return store.list_criteria(case_id)
+
+
+# One source for the rows of each case table: the JSON endpoints and the CSV/XLSX exports both read through it, so an
+# export always holds what the table shows with the same filters.
+TABLE_ROWS: Dict[str, Callable[[Store, str, TableFilters], List[Dict[str, Any]]]] = {
+    "findings": findings_rows, "evidence": evidence_rows, "timeline": timeline_rows, "criteria": criteria_rows}
 
 
 def page(rows: List[Dict[str, Any]], cursor: str = "", limit: int = 100) -> Tuple[List[Dict[str, Any]], Optional[str]]:

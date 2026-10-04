@@ -222,3 +222,26 @@ def test_a_planted_console_symlink_never_sends_the_context_write_outside_the_roo
         jobs.launch(LaunchRequest("new-open-case", str(folder), notes="nota"), ADMIN)
     assert err.value.status == 409 and "case_roots" in err.value.message
     assert list(outside.iterdir()) == [] and cstore.list_jobs() == []  # nothing written, no job created
+
+
+def test_a_runner_that_cannot_spawn_fails_its_job_and_the_dispatch_goes_on(make_jobs, module_runner, case_root,
+                                                                           cstore, wait_until):
+    real = module_runner()
+    broken = set()
+
+    def runner(job_id):
+        if job_id in broken:
+            raise RuntimeError("tabla de procesos llena")
+        return real(job_id)
+
+    jobs = make_jobs(runner=runner)
+    rows = []
+    for name in ("Caso Roto", "Caso Sano"):  # queued together: one dispatch pass meets both
+        plan = jobs.plan(LaunchRequest("new-open-case", str(_folder(case_root, name))), "jean")
+        rows.append(cstore.create_job(command=plan["command"], folder=plan["folder"], args=plan["args"],
+                                      argv=plan["argv"], launched_by="jean"))
+    broken.add(rows[0]["id"])
+    assert jobs.dispatch() == [rows[1]["id"]]
+    failed = cstore.get_job(rows[0]["id"])
+    assert failed["status"] == "failed" and "tabla de procesos llena" in failed["error"]
+    assert wait_until(lambda: _done(cstore, rows[1]["id"]), timeout=60)["status"] == "succeeded"

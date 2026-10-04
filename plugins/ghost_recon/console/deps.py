@@ -4,24 +4,29 @@ from __future__ import annotations
 
 import hmac
 from dataclasses import dataclass
+from typing import Optional
 
 from fastapi import Depends, HTTPException, Request
 
 from ..core.db import Store
 from .auth import AuthService, Principal
+from .exports import ExportService
 from .jobs import JobService
 from .settings import ConsoleSettings
 from .store import ConsoleStore
 
 CSRF_HEADER = "x-gr-csrf"
+BACKGROUND_HEADER = "x-gr-background"  # "1": the page asked on its own (a poll), not the user
 SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
 
 class ApiError(HTTPException):
-    """HTTP error rendered as ``{"error": {"code", "message"}}`` by the app's exception handler."""
+    """HTTP error rendered as ``{"error": {"code", "message", **extra}}`` by the app's exception handler."""
 
-    def __init__(self, status: int, code: str, message: str, headers: dict | None = None):
-        super().__init__(status_code=status, detail={"code": code, "message": message}, headers=headers)
+    def __init__(self, status: int, code: str, message: str, headers: dict | None = None,
+                 extra: dict | None = None):
+        super().__init__(status_code=status, detail={**(extra or {}), "code": code, "message": message},
+                         headers=headers)
 
 
 @dataclass
@@ -31,6 +36,7 @@ class ConsoleContext:
     cstore: ConsoleStore
     auth: AuthService
     jobs: JobService
+    exports: ExportService
 
 
 def get_ctx(request: Request) -> ConsoleContext:
@@ -50,25 +56,49 @@ def _same(sent: str, expected: str) -> bool:
     return hmac.compare_digest(sent.encode("utf-8"), expected.encode("utf-8"))
 
 
-def current_principal(request: Request, ctx: ConsoleContext = Depends(get_ctx)) -> Principal:
-    """Bearer token (API clients, CSRF-exempt: no cookie involved) or session cookie (browser, CSRF-checked)."""
+def _bearer(request: Request) -> Optional[str]:
     authz = request.headers.get("authorization", "")
-    if authz[:7].lower() == "bearer ":
-        principal = ctx.auth.resolve_bearer(authz[7:].strip())
-        if principal is None:
-            raise ApiError(401, "invalid_token", "token inválido o revocado")
-        return principal
-    principal = ctx.auth.resolve_session(request.cookies.get(session_cookie_name(ctx.settings), ""))
+    return authz[7:].strip() if authz[:7].lower() == "bearer " else None
+
+
+def _is_background(request: Request) -> bool:
+    return request.headers.get(BACKGROUND_HEADER, "") == "1"
+
+
+def resolve_principal(request: Request, ctx: ConsoleContext, *, touch: bool = True) -> Optional[Principal]:
+    """Who the request acts for right now (Bearer token or session cookie), or None. No CSRF check, so a long-lived
+    stream can ask again later. ``touch=False`` (and any request marked as a background poll) still authenticates and
+    still expires, but never refreshes last-seen: only what the user does keeps a session alive."""
+    touch = touch and not _is_background(request)
+    token = _bearer(request)
+    if token is not None:
+        return ctx.auth.resolve_bearer(token, touch=touch)
+    return ctx.auth.resolve_session(request.cookies.get(session_cookie_name(ctx.settings), ""), touch=touch)
+
+
+def _authenticate(request: Request, ctx: ConsoleContext, *, touch: bool = True) -> Principal:
+    principal = resolve_principal(request, ctx, touch=touch)
     if principal is None:
+        if _bearer(request) is not None:
+            raise ApiError(401, "invalid_token", "token inválido o revocado")
         raise ApiError(401, "unauthenticated", "inicia sesión")
-    if request.method not in SAFE_METHODS and not _same(request.headers.get(CSRF_HEADER, ""), principal.csrf or ""):
+    if (principal.via == "session" and request.method not in SAFE_METHODS
+            and not _same(request.headers.get(CSRF_HEADER, ""), principal.csrf or "")):
         raise ApiError(403, "csrf", "falta o no coincide la cabecera anti-CSRF")
     return principal
 
 
-def require(role: str):
-    """Dependency factory: the principal must hold ``role`` (admin implies viewer)."""
-    def _dependency(principal: Principal = Depends(current_principal)) -> Principal:
+def current_principal(request: Request, ctx: ConsoleContext = Depends(get_ctx)) -> Principal:
+    """Bearer token (API clients, CSRF-exempt: no cookie involved) or session cookie (browser, CSRF-checked)."""
+    return _authenticate(request, ctx)
+
+
+def require(role: str, *, touch: bool = True):
+    """Dependency factory: the principal must hold ``role`` (admin implies viewer). ``touch=False`` for a route the
+    browser opens on its own (the live stream reconnects by itself): it authenticates and expires the same, but never
+    refreshes the session."""
+    def _dependency(request: Request, ctx: ConsoleContext = Depends(get_ctx)) -> Principal:
+        principal = _authenticate(request, ctx, touch=touch)
         if not principal.has(role):
             raise ApiError(403, "forbidden", f"requiere rol {role}")
         return principal

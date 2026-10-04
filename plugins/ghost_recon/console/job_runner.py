@@ -5,7 +5,9 @@ directory ``<id>/`` (never the evidence folder), with stdout → ``<id>.jsonl`` 
 the stream into ``<id>.events.jsonl``, keeps ``phase``/``session_id``/``case_id`` current and writes the final state.
 The console server is never its required parent: the job survives a server restart and the new server finds it in the
 DB. Every write is conditional on the row still being ``running``, so a cancel (or an orphan verdict) always wins; the
-runner then stops the agent and exits.
+runner then stops the agent and exits. When the job ends (succeeded or failed) and a notice target is configured, the
+runner runs the ``hermes send`` argv the server planned, with a short summary; the notice is best effort and never
+changes the job.
 """
 
 from __future__ import annotations
@@ -13,6 +15,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import re
 import sqlite3
 import subprocess
 import sys
@@ -20,15 +23,44 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
+from ..core import ids
 from ..core.db import Store, utcnow
-from . import events, jobfiles, procs
+from . import commands, events, jobfiles, procs
 from .store import ACTIVE_STATUSES, ConsoleStore
 
 RESULT_TEXT_MAX = 20_000
 SELF_CHECK = "ghost-recon job runner ok"
 NO_IDENTITY_ERROR = "no se pudo verificar el proceso del agente al iniciarlo (PID y hora de inicio)"
 ESSENTIAL_WRITE_BACKOFF_S = (0.5, 1.0, 2.0, 4.0)
+NOTIFY_TIMEOUT_S = 60
+NOTIFY_ERROR_MAX = 300
+_MEDIA_RE = re.compile(r"MEDIA:", re.IGNORECASE)
+# The audit status words of the console UI (static/lib/format.js AUDIT_STATUS).
+AUDIT_STATUS_LABELS = {"open": "abierta", "in_progress": "en curso", "validated": "validada", "sealed": "sellada",
+                       "failed": "fallida"}
 logger = logging.getLogger(__name__)
+
+
+def notify_message(job: Dict[str, Any], status: str, case: Dict[str, Any], last_audit: Optional[Dict[str, Any]],
+                   error: Optional[str]) -> str:
+    """The job-end notice: order, outcome, case and last audit (status in Spanish), and the first line of a failure's
+    reason, redacted and trimmed: a long stderr tail (client folder names, paths) never reaches the external channel.
+    Text the operator controls (case and folder names, the agent's error) can never turn into a ``MEDIA:`` attachment
+    of ``hermes send``, and the message always starts with a word, never with a flag."""
+    verb = "terminó" if status == "succeeded" else "falló"
+    order = commands.ORDER_LABELS.get(job["command"], job["command"])
+    where = f"{case['name']} ({case['id']})" if case else Path(job["folder"]).name
+    lines = [f"Ejecución #{job['id']} · {order} · {verb}", f"Caso: {where}"]
+    if last_audit:
+        status_word = AUDIT_STATUS_LABELS.get(last_audit["status"], last_audit["status"])
+        lines.append(f"Última auditoría: {ids.short_audit(last_audit['id'])} ({status_word})")
+    if error:
+        from agent.redact import redact_sensitive_text
+        redacted = redact_sensitive_text(str(error), force=True)  # whole text first: a multi-line secret is seen whole
+        first_line = next((line.strip() for line in redacted.splitlines() if line.strip()), "")
+        if first_line:
+            lines.append(f"Motivo: {first_line[:NOTIFY_ERROR_MAX]}")
+    return _MEDIA_RE.sub("MEDIA :", "\n".join(lines))
 
 
 def _retrying(write: Callable[[], Any]) -> Any:
@@ -67,6 +99,7 @@ class Runner:
         self.log = jobfiles.log_path(base, job_id)
         self.events = jobfiles.events_path(base, job_id)
         self.work = jobfiles.work_dir(base, job_id)
+        self.runner_log = jobfiles.runner_log_path(base, job_id)
         self.norm = events.Normalizer()
         self.offset = 0
         self.reported: Dict[str, Any] = {}
@@ -180,12 +213,48 @@ class Runner:
         extra = {"result_text": text, "phase": self.norm.phase, "session_id": self.norm.session_id,
                  "case_id": case_id}
         fields.update({k: v for k, v in extra.items() if v})
-        if _retrying(lambda: self.cstore.update_job(self.job_id, expect=("running",), **fields)) and case_id:
+        if not _retrying(lambda: self.cstore.update_job(self.job_id, expect=("running",), **fields)):
+            return  # cancelled or declared orphan meanwhile: that verdict stands, and nobody is told otherwise
+        if case_id:
             verb = "terminó" if state["status"] == "succeeded" else "falló"
             _retrying(lambda: self.store.add_event(
                 case_id, "console_job_finished", f"Ejecución #{self.job_id} ({job['command']}) {verb}",
                 actor=job["launched_by"], ref={"job_id": self.job_id, "status": state["status"],
                                                "session_id": self.norm.session_id or None}))
+        self._notify(job, state["status"], case_id, state["error"])
+
+    def _notify(self, job: Dict[str, Any], status: str, case_id: Optional[str], error: Optional[str]) -> None:
+        """``hermes send`` to the configured target (spec §6.2), with the argv the server planned plus the summary.
+        Best effort: a failure goes to the runner log and the job keeps its final state."""
+        argv = job.get("notify_argv") or []
+        if not argv:
+            return
+        try:
+            case = self.store.get_case(case_id) if case_id else {}
+            audits = self.store.list_audits(case_id) if case else []
+            message = notify_message(job, status, case, audits[-1] if audits else None, error)
+            self._send([*argv, message])
+        except Exception as exc:
+            logger.warning("ghost-recon job runner: the job-end notice was not sent: %s", exc)
+
+    def _send(self, argv: List[str]) -> None:
+        """Run the notice with its output in the runner log (never a pipe a surviving grandchild could hold open) and,
+        past ``NOTIFY_TIMEOUT_S``, kill its whole process tree so the runner can always exit."""
+        with open(self.runner_log, "ab") as log:
+            proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=log, stderr=log, cwd=self.work,
+                                    env=procs.child_env())
+            started = procs.identity(proc.pid)
+            try:
+                code = proc.wait(timeout=NOTIFY_TIMEOUT_S)
+            except subprocess.TimeoutExpired:
+                if not procs.kill_tree(proc.pid, started):
+                    proc.kill()  # identity unreadable: kill_tree refused, so at least stop the direct child
+                proc.wait(timeout=10)
+                logger.warning("ghost-recon job runner: hermes send timed out after %ss and was stopped",
+                               NOTIFY_TIMEOUT_S)
+                return
+        if code != 0:
+            logger.warning("ghost-recon job runner: hermes send exited %s", code)
 
 
 def main(argv: Optional[List[str]] = None) -> int:

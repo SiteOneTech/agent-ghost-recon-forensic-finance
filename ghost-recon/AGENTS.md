@@ -27,10 +27,20 @@ genérica de plugins (ver `plugins/AGENTS.md`), nunca se cablea lógica Ghost Re
   secciones `When to Use / Prerequisites / How to Run / Quick Reference / Procedure / Pitfalls /
   Verification`, herramientas nativas en backticks). El texto largo va en `references/`.
 - La consola (`plugins/ghost_recon/console/`) **solo escribe** sus tablas `console_*`, el archivo de contexto combinado
-  (`<resultados>/_console/context_<hash>.md`) y los eventos `console_job_*` de la cronología del caso (con
-  `Store.add_event`); los datos de caso se leen por `core` (`Store`, `service`). Toda carpeta que llega del navegador
-  pasa por `console/fsjail.resolve` (dentro de `case_roots`) y toda descarga por `console/paths.resolve_within`. En el
-  frontend, nada de `innerHTML` con datos: siempre `h()` (`static/lib/dom.js`).
+  (`<resultados>/_console/context_<hash>.md`), los eventos `console_job_*` y `results_exported` de la cronología del
+  caso (con `Store.add_event`) y, bajo `<plugin-data>/ghost-recon/console/`, los ZIP de `exports/` (más su `.sha256`) y
+  los archivos de `jobs/`. Solo borran esos archivos: `housekeeping.py` (retención de ZIP con `prune_exports`, que
+  `ExportService` también llama tras cada construcción, y archivos de ejecuciones terminadas), `exporter.build` (su
+  propio `.part`, o el ZIP si falla su `.sha256`) y `ExportService.recover` (al arrancar, todo ZIP, `.sha256` o `.part`
+  que no sea de una exportación terminada); en `exports/` siempre como nombre simple vía `paths.file_inside`. Los datos
+  de caso se leen por `core` (`Store`, `service`). Toda carpeta que llega del navegador pasa por `console/fsjail.resolve`
+  (dentro de `case_roots`); toda descarga de un archivo de caso, por `console/paths.resolve_within`, y la de un ZIP o su
+  `.sha256`, por `ExportService._inside` (nombre simple directamente dentro de `exports/`). En el frontend, nada de
+  `innerHTML` con datos: siempre `h()` (`static/lib/dom.js`).
+- Un archivo de una auditoría sellada solo sale de la consola tras `console/integrity.py` (descarga de entregables y ZIP):
+  se vuelve a hashear contra `SEALED.json`. El ZIP solo lee la carpeta de resultados y nunca sigue enlaces.
+- La raíz del repositorio ignora `export*`; `plugins/ghost_recon/console/.gitignore` los reincluye. Un módulo nuevo de la
+  consola cuyo nombre empiece por `export` no necesita nada más.
 - Procesos de la consola: lo que toca internos de Hermes para lanzar, vigilar o detener ejecuciones vive solo en
   `console/procs.py` (lanzador de la instalación, entorno del perfil, desacople, árbol con psutil e identidad PID +
   create time). La orden (`commands.py`), las fases (`events.py`) y los límites (`jobs.py`) son Python probado; el JS
@@ -64,3 +74,8 @@ python ghost-recon/demo/smoke_test.py                          # ciclo completo 
 | cambiar cómo se deducen las fases o el feed de una ejecución | `console/events.py` (`PHASES`, `_FIXED_PHASE`, `_SUMMARY`) |
 | cambiar límites, cola, cancelación o huérfanos | `console/jobs.py` (`JobService`) y `console/job_runner.py` |
 | cambiar qué carpetas ve el navegador de la consola | `console/fsjail.py` y `case_roots` en la configuración |
+| cambiar qué entra en el ZIP de resultados o su manifiesto | `console/exporter.py` (`select`, `plan_entries`, `build`); la cola y las filas en `console/exports.py` |
+| cambiar las columnas o los formatos de las tablas exportables | `console/tables.py` (`TABLES`, `to_csv`, `to_xlsx`); las filas en `console/readmodel.py` (`TABLE_ROWS`) |
+| cambiar la búsqueda entre casos | `console/search.py` (`SOURCES`, límites) |
+| cambiar el aviso al terminar una ejecución | `console/commands.py` (`notify_args`) y `console/job_runner.py` (`notify_message`, `_notify`) |
+| cambiar la limpieza periódica (sesiones, ZIP, archivos de ejecuciones) | `console/housekeeping.py` |

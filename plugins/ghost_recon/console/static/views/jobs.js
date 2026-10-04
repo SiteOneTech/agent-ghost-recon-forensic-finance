@@ -17,10 +17,10 @@ export async function render({ user, onLeave }) {
   const box = h("div");
   let active = false;
   const guard = latestGuard();
-  async function load() {
+  async function load(background = false) {
     const token = guard.next();
     try {
-      const data = await api("/jobs", { query: { status: status.value, case: caseFilter.value } });
+      const data = await api("/jobs", { query: { status: status.value, case: caseFilter.value }, background });
       if (!guard.isLatest(token)) return;
       active = data.items.some((j) => j.active);
       const filtered = Boolean(status.value || caseFilter.value);
@@ -30,10 +30,10 @@ export async function render({ user, onLeave }) {
       if (guard.isLatest(token)) mount(box, errorState(err));
     }
   }
-  status.addEventListener("change", load);
-  caseFilter.addEventListener("change", load);
+  status.addEventListener("change", () => load());
+  caseFilter.addEventListener("change", () => load());
   await load();
-  const timer = setInterval(() => { if (active) load(); }, 5000);
+  const timer = setInterval(() => { if (active) load(true); }, 5000);
   onLeave(() => clearInterval(timer));
   return h("div", { class: "page" },
     h("div", { class: "page-head" }, h("h1", {}, "Ejecuciones"), newAuditAction(user)),
