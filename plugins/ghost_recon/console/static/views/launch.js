@@ -62,8 +62,9 @@ export function launchPanel({ command, folder, inspect, onLaunched }) {
       if (!guard.isLatest(token)) return;
       if (contextSha(result.original_context) !== contextSha(shown)) {
         // context.md changed since it was shown: show the current one before anything can be launched with it.
-        shown = (await api("/fs/inspect", { query: { path: folder } })).context;
-        if (!guard.isLatest(token)) return;
+        const fresh = (await api("/fs/inspect", { query: { path: folder } })).context;
+        if (!guard.isLatest(token)) return; // a newer refresh owns `shown` and the box
+        shown = fresh;
         mount(contextBox, h("p", { class: "notice" }, "El context.md de la carpeta cambió: esta es la versión actual."),
           contextBlock(shown));
         if (contextSha(result.original_context) !== contextSha(shown)) {

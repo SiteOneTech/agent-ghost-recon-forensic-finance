@@ -158,6 +158,7 @@ def test_the_job_list_pages_with_a_working_cursor(login_as, cstore, case_root):
     assert rest["next_cursor"] is None
     assert [j["id"] for j in first["items"] + rest["items"]] == sorted(ids, reverse=True)  # newest first, no gaps
     assert c.get("/api/v1/jobs", params={"cursor": "abc"}).status_code == 422
+    assert c.get("/api/v1/jobs", params={"cursor": "9" * 20}).status_code == 422  # would overflow SQLite INTEGER
 
 
 def test_home_counts_active_jobs_and_cancel_stops_them(login_as, case_root, wait_until):

@@ -103,7 +103,7 @@ def list_jobs(status: str = "", case: str = "", cursor: str = "", limit: int = Q
     """Newest first; ``next_cursor`` (the last id returned) continues the list while more rows exist."""
     if status and status != "active" and status not in JOB_STATUSES:
         raise ApiError(422, "invalid_argument", f"estado desconocido: {status}")
-    if cursor and not (cursor.isascii() and cursor.isdigit()):
+    if cursor and not (cursor.isascii() and cursor.isdigit() and len(cursor) <= 18):
         raise ApiError(422, "invalid_argument", f"cursor inválido: {cursor}")
     statuses = ACTIVE_STATUSES if status == "active" else ((status,) if status else ())
     folder = get_case_or_404(ctx, case)["root_path"] if case else ""
