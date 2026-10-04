@@ -189,3 +189,19 @@ def test_display_command_round_trips_through_windows_argv_parsing():
     to_argv.restype = ctypes.POINTER(ctypes.c_wchar_p)
     parsed = to_argv(display_command(argv, windows=True), ctypes.byref(count))
     assert [parsed[i] for i in range(count.value)] == argv
+
+
+def test_a_new_audit_without_out_pins_the_default_results_folder(plan_for, fresh, case_root):
+    p = plan_for("new-open-case", fresh)
+    pinned = f'--out "{fresh.resolve() / AUDITS}"'
+    assert p["query"].count("--out") == 1 and pinned in p["query"] and p["results_root"] == str(fresh.resolve() / AUDITS)
+    assert p["argv"][p["argv"].index("-q") + 1] == p["query"]
+    out = case_root / "Salidas"
+    out.mkdir()
+    q = plan_for("new-open-case", fresh, out=str(out))["query"]
+    assert q.count("--out") == 1 and f'--out "{out.resolve()}"' in q and AUDITS not in q
+
+
+def test_rerun_and_review_queries_do_not_gain_an_out(plan_for, seeded):
+    assert "--out" not in plan_for("rerun-case", seeded["root"])["query"]
+    assert "--out" not in plan_for("review-case", seeded["root"])["query"]

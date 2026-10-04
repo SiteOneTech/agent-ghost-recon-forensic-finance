@@ -42,10 +42,11 @@ class Order:
     context_arg: bool   # the skill takes a context .md as its second argument
     options: bool       # --name / --currency / --lang
     out: bool           # --out
+    pin_out: bool = False  # always pass --out: the operator's, else the default results root
 
 
 ORDERS: Dict[str, Order] = {
-    "new-open-case": Order("new-open-case", "new-open-case", "not_sealed", True, True, True),
+    "new-open-case": Order("new-open-case", "new-open-case", "not_sealed", True, True, True, True),
     "rerun-case": Order("rerun-case", "rerun-case", "case", True, False, True),
     "review-case": Order("review-case", "review-case", "sealed", False, False, False),
 }
@@ -198,7 +199,10 @@ def plan(req: LaunchRequest, *, store: Store, roots: Sequence[Path], audits_dirn
                                                                      username))
     else:
         context_file = original["path"] if original and order.context_arg else ""
-    query = build_query(order, folder, _safe("archivo de contexto", context_file), opts, out)
+    # The agent improvises a results folder when --out is absent, which can land outside case_roots. The default
+    # (<folder>/<audits_dirname>) is the product's own location, so it skips the evidence-folder check of an operator out.
+    query_out = out or (results_root if order.pin_out else None)
+    query = build_query(order, folder, _safe("archivo de contexto", context_file), opts, query_out)
     return {"command": order.command, "skill": order.skill, "folder": str(folder), "out": str(out) if out else "",
             "case": case, "results_root": str(results_root), "original_context": original, "notes": notes,
             "context_file": context_file, "query": query,
