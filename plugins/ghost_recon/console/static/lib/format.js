@@ -16,7 +16,9 @@ const FINDING_KIND = { exception: "excepción", anomaly: "anomalía", finding: "
 const FINDING_STATUS = { open: "abierto", closed: "cerrado", downgraded: "degradado", upgraded: "elevado", superseded: "sustituido" };
 const EVIDENCE_STATUS = { NEW: "nuevo", REGISTERED: "registrado", MODIFIED: "modificado", DUP_PRIOR: "duplicado de una auditoría previa",
   DUP_INTERNAL: "duplicado interno", DUP_CONTENT: "duplicado por contenido" };
-const RUN_KIND = { validation: "validación", reconcile: "conciliación", research: "investigación", review: "revisión" };
+// The kinds gr_run_record accepts (tools.py), named like the job phases.
+const RUN_KIND = { intake: "intake", swarm: "enjambre", validation: "validación", research: "investigación",
+  build: "pack", review: "revisión" };
 const EVENT_LABEL = {
   case_opened: "Caso abierto", case_reimported: "Caso re-importado", audit_started: "Auditoría iniciada",
   audit_sealed: "Auditoría sellada", review_started: "Revisión iniciada", criterion_added: "Criterio añadido",
