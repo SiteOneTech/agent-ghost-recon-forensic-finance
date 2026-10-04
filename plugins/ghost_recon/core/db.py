@@ -227,7 +227,13 @@ def _locked(fn):
     """Serialise Store methods: one connection is shared by every session/thread of a gateway process."""
     def wrapper(self, *a, **k):
         with self._lock:
-            return fn(self, *a, **k)
+            try:
+                return fn(self, *a, **k)
+            except Exception:
+                # A failed write (e.g. "database is locked") leaves the implicit transaction open, and every later
+                # read on the shared connection would see that stale snapshot and later writes would fail.
+                self.conn.rollback()
+                raise
     wrapper.__name__ = fn.__name__
     wrapper.__doc__ = fn.__doc__
     return wrapper

@@ -61,3 +61,27 @@ def test_known_hashes_can_exclude_current_audit():
                                  {"path": "b", "filename": "b", "sha256": "h2", "first_audit_id": "X/A02"}])
     assert set(st.known_hashes(c["id"])) == {"h1", "h2"}
     assert set(st.known_hashes(c["id"], exclude_audit_id="X/A02")) == {"h1"}
+
+
+def test_a_failed_write_never_wedges_the_shared_connection(gr_env):
+    """One locked write must not leave later reads stale or later writes failing on the shared connection."""
+    import sqlite3
+    import pytest
+    from plugins.ghost_recon import runtime
+    st = runtime.store()
+    case = _case(st)
+    other = runtime.open_connection()
+    st.conn.execute("PRAGMA busy_timeout=50")
+    other.execute("INSERT INTO timeline(case_id, ts, event_type, actor, description) VALUES (?,?,?,?,?)",
+                  (case["id"], "2026-01-01T00:00:00Z", "note", "x", "held"))  # holds the write lock
+    with pytest.raises(sqlite3.OperationalError):
+        st.add_event(case["id"], "note", "blocked")
+    other.commit()
+    st.list_events(case["id"])  # a read right after the failure: it must not pin a snapshot
+    other.execute("INSERT INTO timeline(case_id, ts, event_type, actor, description) VALUES (?,?,?,?,?)",
+                  (case["id"], "2026-01-01T00:00:01Z", "note", "x", "fresh"))
+    other.commit()
+    other.close()
+    assert "fresh" in [e["description"] for e in st.list_events(case["id"])]  # a read sees what others wrote
+    st.add_event(case["id"], "note", "later write")  # and a later write succeeds
+    assert "later write" in [e["description"] for e in st.list_events(case["id"])]
