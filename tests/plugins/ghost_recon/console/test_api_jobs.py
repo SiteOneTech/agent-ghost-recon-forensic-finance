@@ -121,3 +121,40 @@ def test_unknown_jobs_are_404(login_as):
     c = login_as("viewer")
     assert c.get("/api/v1/jobs/999").json()["error"]["code"] == "not_found"
     assert c.get("/api/v1/jobs/999/events").status_code == 404
+
+
+def _read_stream(client, job_id, *, headers=None, params=None, limit=60.0):
+    """Frames of the SSE stream until it ends; the deadline keeps a broken stream from hanging the suite."""
+    import time
+    deadline = time.monotonic() + limit
+    text = []
+    with client.stream("GET", f"/api/v1/jobs/{job_id}/events/stream", headers=headers or {},
+                       params=params or {}) as r:
+        assert r.status_code == 200
+        for chunk in r.iter_text():
+            text.append(chunk)
+            assert time.monotonic() < deadline, "stream did not end in time"
+            if "event: end" in "".join(text):
+                break
+    joined = "".join(text)
+    return [int(line[4:]) for line in joined.splitlines() if line.startswith("id: ")], joined
+
+
+def test_a_live_stream_delivers_every_event_through_result_before_end(login_as, case_root):
+    c = login_as("admin")
+    job = c.post("/api/v1/jobs", json={"command": "new-open-case",
+                                       "folder": str(_folder(case_root, "Caso Vivo"))}).json()["job"]
+    ids, text = _read_stream(c, job["id"])  # opened right away: the job is still running
+    assert ids and ids == list(range(1, len(ids) + 1))
+    assert '"kind": "result"' in text and text.index('"kind": "result"') < text.index("event: end")
+    assert ids == [e["seq"] for e in c.get(f"/api/v1/jobs/{job['id']}/events").json()["items"]]
+
+
+def test_stream_after_parameter_and_non_ascii_last_event_id(login_as, case_root, wait_until):
+    c = login_as("admin")
+    job = c.post("/api/v1/jobs", json={"command": "new-open-case",
+                                       "folder": str(_folder(case_root, "Caso Despues"))}).json()["job"]
+    wait_until(lambda: _finished(c, job["id"]), timeout=60, message="job end")
+    everything, _ = _read_stream(c, job["id"])
+    assert _read_stream(c, job["id"], params={"after": everything[1]})[0] == everything[2:]
+    assert _read_stream(c, job["id"], headers={"Last-Event-ID": "\u00b2".encode("latin-1")})[0] == everything  # not a 500

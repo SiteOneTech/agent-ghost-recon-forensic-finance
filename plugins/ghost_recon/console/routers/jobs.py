@@ -121,18 +121,20 @@ async def job_stream(job_id: int, request: Request, after: int = Query(0, ge=0),
     comment as heartbeat. The events file is polled every ``stream_poll`` seconds (1 s by default)."""
     _job_or_404(ctx, job_id)
     last = request.headers.get("last-event-id", "")
-    start = max(after, int(last)) if last.isdigit() else after
+    start = max(after, int(last)) if last.isascii() and last.isdigit() else after
     path = jobfiles.events_path(ctx.jobs.jobs_dir, job_id)
     poll = ctx.jobs.stream_poll
 
     async def frames():
         seq, offset, sent, idle = start, 0, None, 0.0
         while not await request.is_disconnected():
+            # Job row first: the runner appends its last events and only then sets the terminal status, so a
+            # terminal row read BEFORE an empty events read proves nothing is left to send.
+            job = ctx.cstore.get_job(job_id)
             items, offset = jobfiles.read_events(path, after=seq, offset=offset)
             for event in items:
                 seq = event["seq"]
                 yield f"id: {seq}\nevent: event\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
-            job = ctx.cstore.get_job(job_id)
             state = {key: job.get(key) for key in _STATUS_KEYS}
             if state != sent:
                 sent = state
