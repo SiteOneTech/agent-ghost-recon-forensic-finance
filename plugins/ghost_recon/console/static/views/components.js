@@ -1,6 +1,7 @@
-// Shared view pieces: KPI tiles, data tables with expandable rows, empty/error states, the cases table, debounce.
+// Shared view pieces: KPI tiles, tables with expandable rows, empty/error states, the cases and jobs tables, form
+// fields, dialogs and copy-to-clipboard.
 import { h } from "../lib/dom.js";
-import { fmtDate, label, riskChips, sealChip } from "../lib/format.js";
+import { COMMAND_LABEL, fmtDate, fmtDuration, jobChip, label, riskChips, sealChip } from "../lib/format.js";
 
 export function kpi(value, title, extra) {
   return h("div", { class: "kpi" },
@@ -9,17 +10,19 @@ export function kpi(value, title, extra) {
     extra ? h("div", { class: "kpi-extra" }, extra) : null);
 }
 
-export function emptyState(text) {
-  return h("div", { class: "empty" }, text);
+/** Empty state: a sentence plus, optionally, the action that fills it (buttons or links; nulls are skipped). */
+export function emptyState(text, ...actions) {
+  const items = actions.flat().filter(Boolean);
+  return h("div", { class: "empty" }, h("p", {}, text), items.length ? h("div", { class: "empty-actions" }, items) : null);
 }
 
 export function errorState(err) {
   return h("div", { class: "error", role: "alert" }, `No se pudo cargar: ${(err && err.message) || err}`);
 }
 
-/** columns: [{ title, cell(row) -> node|string|array, class? }]; opts: { empty, onRow(row, tr) }. */
+/** columns: [{ title, cell(row) -> node|string|array, class? }]; opts: { empty (text or node), onRow(row, tr) }. */
 export function dataTable(columns, rows, opts = {}) {
-  if (!rows || !rows.length) return emptyState(opts.empty || "Sin datos.");
+  if (!rows || !rows.length) return opts.empty instanceof Node ? opts.empty : emptyState(opts.empty || "Sin datos.");
   const head = h("thead", {}, h("tr", {}, columns.map((c) => h("th", { class: c.class, scope: "col" }, c.title))));
   const body = h("tbody");
   for (const row of rows) {
@@ -52,7 +55,12 @@ export async function toggleDetail(tr, build) {
   }
 }
 
-export function casesTable(rows) {
+/** The "+ Nueva auditoría" action for admins; null for viewers. */
+export function newAuditAction(user) {
+  return user && user.role === "admin" ? h("a", { class: "btn", href: "#/new" }, "+ Nueva auditoría") : null;
+}
+
+export function casesTable(rows, user, { empty } = {}) {
   return dataTable([
     { title: "Caso", cell: (r) => h("a", { href: `#/cases/${encodeURIComponent(r.id)}` }, r.name) },
     { title: "Última auditoría", cell: (r) => (r.last_audit
@@ -60,7 +68,21 @@ export function casesTable(rows) {
     { title: "Abiertos", cell: (r) => riskChips(r.open_by_risk) },
     { title: "Sello", cell: (r) => sealChip(r.seal_state) },
     { title: "Última actividad", cell: (r) => fmtDate(r.last_activity) },
-  ], rows, { empty: "Todavía no hay casos. Se crean con /new-open-case (desde la consola en H2)." });
+  ], rows, { empty: empty || emptyState("Todavía no hay casos.", newAuditAction(user)) });
+}
+
+export function jobsTable(rows, { showCase = true, empty = "Sin ejecuciones." } = {}) {
+  return dataTable([
+    { title: "#", cell: (j) => h("a", { href: `#/jobs/${j.id}` }, `#${j.id}`) },
+    { title: "Orden", cell: (j) => COMMAND_LABEL[j.command] || j.command },
+    showCase ? { title: "Caso o carpeta", cell: (j) => (j.case_id
+      ? h("a", { href: `#/cases/${encodeURIComponent(j.case_id)}` }, j.case_name || j.case_id) : j.folder_name) } : null,
+    { title: "Estado", cell: (j) => jobChip(j.status) },
+    { title: "Fase", cell: (j) => j.phase_label || "—" },
+    { title: "Lanzada por", cell: (j) => j.launched_by },
+    { title: "Inicio", cell: (j) => fmtDate(j.started_at || j.created_at) },
+    { title: "Duración", class: "num", cell: (j) => fmtDuration(j.duration_s) },
+  ].filter(Boolean), rows, { empty });
 }
 
 export function debounce(fn, ms) {
@@ -69,4 +91,51 @@ export function debounce(fn, ms) {
     clearTimeout(timer);
     timer = setTimeout(() => fn(...args), ms);
   };
+}
+
+let fieldSeq = 0;
+
+/** A labelled form control (the label points at the control). */
+export function field(text, control, hint) {
+  fieldSeq += 1;
+  if (!control.id) control.id = `field-${fieldSeq}`;
+  return h("div", { class: "field" }, h("label", { for: control.id }, text), control,
+    hint ? h("small", { class: "muted" }, hint) : null);
+}
+
+/** Copy to the clipboard; falls back to a hidden textarea where the async clipboard API is unavailable. */
+export async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    const area = h("textarea", { class: "copy-fallback", readonly: true }, text);
+    document.body.append(area);
+    area.select();
+    const ok = document.execCommand("copy");
+    area.remove();
+    return ok;
+  }
+}
+
+export function copyButton(text, labelText = "Copiar") {
+  const button = h("button", { class: "btn ghost", type: "button" }, labelText);
+  button.addEventListener("click", async () => {
+    button.textContent = (await copyText(text)) ? "Copiado ✓" : "No se pudo copiar";
+    setTimeout(() => { button.textContent = labelText; }, 1800);
+  });
+  return button;
+}
+
+/** A modal <dialog>; closing it (✕, Esc or navigating away) removes it from the page. */
+export function modal(title, body, { wide = false } = {}) {
+  const close = h("button", { class: "btn ghost small", type: "button", "aria-label": "Cerrar" }, "✕");
+  const dialog = h("dialog", { class: wide ? "modal wide" : "modal", "aria-label": title },
+    h("div", { class: "modal-head" }, h("h2", {}, title), close), body);
+  dialog.addEventListener("close", () => dialog.remove());
+  close.addEventListener("click", () => dialog.close());
+  window.addEventListener("hashchange", () => dialog.close(), { once: true });
+  document.body.append(dialog);
+  dialog.showModal();
+  return { dialog, close: () => dialog.close() };
 }

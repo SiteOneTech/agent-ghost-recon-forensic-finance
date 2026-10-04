@@ -1,0 +1,173 @@
+// Ejecución: header with its actions, phase bar, live activity feed (SSE), "Hasta ahora" counters and, once it ends,
+// the agent's summary, seal state, deliverables, tokens and the technical log.
+import { api } from "../lib/api.js";
+import { h, mount } from "../lib/dom.js";
+import { COMMAND_LABEL, fmtDate, fmtDuration, jobChip, label, sealCheckChip, secondsSince } from "../lib/format.js";
+import { copyButton, kpi } from "./components.js";
+
+const FEED_MAX = 500;
+const FINDING_KINDS = ["exception", "anomaly", "finding", "question"];
+
+function phaseBar(job, seen) {
+  return h("ol", { class: "phases", "aria-label": "Fases" }, job.phases.map((p) => {
+    const state = p.id === job.phase ? (job.active ? "current" : "done") : seen.has(p.id) ? "done" : "pending";
+    return h("li", { class: `phase ${state}`, "aria-current": state === "current" ? "step" : null }, p.label);
+  }));
+}
+
+function feedItem(e) {
+  return h("li", { class: `feed-item kind-${e.kind} level-${e.level}` },
+    h("time", { datetime: e.ts }, e.ts ? new Date(e.ts).toLocaleTimeString("es") : ""),
+    h("span", { class: "feed-title" }, e.title),
+    e.detail ? h("small", { class: "feed-detail" }, e.detail) : null);
+}
+
+function counters(progress) {
+  if (!progress) return h("p", { class: "muted" }, "Los contadores aparecen en cuanto el agente abre el caso.");
+  const f = progress.findings || {};
+  const byKind = FINDING_KINDS.filter((k) => f[k]).map((k) => `${f[k]} ${label.findingKind(k)}`).join(" · ");
+  return h("div", { class: "kpis" },
+    kpi(progress.evidence, "Evidencia registrada"),
+    kpi(progress.findings_total, "Hallazgos", byKind || "ninguno"),
+    kpi(progress.criteria, "Criterios"),
+    kpi(progress.research_notes, "Notas de investigación"));
+}
+
+function tokensText(t) {
+  if (!t || !t.total) return "—";
+  const n = (v) => Number(v || 0).toLocaleString("es");
+  return `${n(t.total)} (entrada ${n(t.input)} · salida ${n(t.output)})`;
+}
+
+function outcome(job) {
+  if (job.active) return null;
+  const a = job.last_audit;
+  return h("section", { class: "card" }, h("h2", {}, "Resultado"),
+    job.error ? h("div", { class: "error" }, job.error) : null,
+    job.result_text ? h("pre", { class: "result" }, job.result_text) : h("p", { class: "muted" }, "El agente no dejó un resumen."),
+    h("dl", { class: "kv" },
+      h("dt", {}, "Última auditoría"), h("dd", {}, a ? [`${a.seq} · ${label.auditStatus(a.status)} `, sealCheckChip(a)] : "—"),
+      h("dt", {}, "Entregables"), h("dd", {}, a && job.case_id
+        ? h("a", { href: `#/cases/${encodeURIComponent(job.case_id)}/audits` }, `${a.reports} en ${a.seq}`) : "—"),
+      h("dt", {}, "Paquete de resultados"), h("dd", {},
+        h("button", { class: "btn ghost small", type: "button", disabled: true, title: "Próximamente" }, "Exportar resultados (.zip)")),
+      h("dt", {}, "Tokens"), h("dd", {}, tokensText(job.tokens))));
+}
+
+function technicalLog(jobId) {
+  const pre = h("pre", { class: "log" }, "Cargando…");
+  const box = h("details", { class: "card" }, h("summary", {}, "Log técnico"), pre);
+  box.addEventListener("toggle", async () => {
+    if (!box.open) return;
+    try {
+      const data = await api(`/jobs/${jobId}/log`);
+      pre.textContent = (data.log || "(el agente no escribió en su salida de error)")
+        + (data.runner_log ? `\n\n--- runner ---\n${data.runner_log}` : "");
+    } catch (err) {
+      pre.textContent = `No se pudo cargar: ${err.message}`;
+    }
+  });
+  return box;
+}
+
+export async function render({ params, user, onLeave }) {
+  const jobId = Number(params[0]);
+  let job = await api(`/jobs/${jobId}`);
+  const seen = new Set();
+  const feed = h("ol", { class: "feed" }, h("li", { class: "feed-empty muted" }, "Esperando la primera actividad del agente…"));
+  const head = h("div");
+  const bar = h("div");
+  const progressBox = h("div");
+  const result = h("div");
+  const duration = h("span");
+
+  function tick() {
+    duration.textContent = fmtDuration(job.active ? secondsSince(job.started_at || job.created_at) : job.duration_s);
+  }
+
+  function actions() {
+    const items = [];
+    if (user.role === "admin" && job.active) {
+      const cancel = h("button", { class: "btn danger", type: "button" }, "Cancelar");
+      cancel.addEventListener("click", async () => {
+        if (!window.confirm("¿Cancelar esta ejecución? La auditoría a medio hacer queda abierta, sin sellar.")) return;
+        cancel.disabled = true;
+        try {
+          job = (await api(`/jobs/${jobId}/cancel`, { method: "POST" })).job;
+          paint();
+        } catch (err) {
+          cancel.disabled = false;
+          cancel.title = err.message;
+        }
+      });
+      items.push(cancel);
+    }
+    items.push(job.resume ? copyButton(job.resume.terminal, "Continuar en terminal")
+      : h("button", { class: "btn ghost", type: "button", disabled: true, title: "Aparece cuando el agente informa su sesión." }, "Continuar en terminal"));
+    if (job.resume && job.resume.chat_url) {
+      items.push(h("a", { class: "btn ghost", href: job.resume.chat_url, target: "_blank", rel: "noopener noreferrer" }, "Continuar en chat"));
+    }
+    return items;
+  }
+
+  function paint() {
+    const where = job.case_id
+      ? h("a", { href: `#/cases/${encodeURIComponent(job.case_id)}` }, job.case_name || job.case_id) : job.folder_name;
+    mount(head, h("div", { class: "case-head" },
+      h("div", {}, h("h1", {}, `${COMMAND_LABEL[job.command] || job.command} · #${job.id}`),
+        h("p", { class: "muted" }, where, ` · lanzada por ${job.launched_by} el ${fmtDate(job.created_at)} · `,
+          jobChip(job.status), " ", duration)),
+      h("div", { class: "actions" }, actions())));
+    tick();
+    mount(bar, phaseBar(job, seen));
+    mount(progressBox, counters(job.progress));
+    mount(result, outcome(job));
+  }
+
+  function addEvents(items) {
+    if (!items.length) return;
+    const placeholder = feed.querySelector(".feed-empty");
+    if (placeholder) placeholder.remove();
+    const atBottom = feed.scrollHeight - feed.scrollTop - feed.clientHeight < 40;
+    for (const e of items) {
+      if (e.kind === "phase" && e.phase) seen.add(e.phase);
+      feed.append(feedItem(e));
+    }
+    while (feed.children.length > FEED_MAX) feed.firstElementChild.remove();
+    if (atBottom) feed.scrollTop = feed.scrollHeight;
+  }
+
+  async function refresh() {
+    job = await api(`/jobs/${jobId}`);
+    paint();
+  }
+
+  const first = await api(`/jobs/${jobId}/events`, { query: { after: 0 } });
+  addEvents(first.items);
+  paint();
+  const timers = [setInterval(tick, 1000)];
+  let source = null;
+  if (job.active) {
+    source = new EventSource(`/api/v1/jobs/${jobId}/events/stream?after=${first.last_seq}`);
+    source.addEventListener("event", (msg) => {
+      const e = JSON.parse(msg.data);
+      addEvents([e]);
+      if (e.kind === "phase") mount(bar, phaseBar(job, seen));
+    });
+    source.addEventListener("status", () => { refresh(); });
+    source.addEventListener("end", () => {
+      source.close();
+      refresh();
+    });
+    timers.push(setInterval(() => { if (job.active) refresh(); }, 5000));
+  }
+  onLeave(() => {
+    timers.forEach(clearInterval);
+    if (source) source.close();
+  });
+  return h("div", { class: "page" }, head, bar,
+    h("div", { class: "grid-2" },
+      h("section", { class: "card" }, h("h2", {}, "Actividad"), feed),
+      h("section", { class: "card" }, h("h2", {}, "Hasta ahora"), progressBox)),
+    result, technicalLog(jobId));
+}
