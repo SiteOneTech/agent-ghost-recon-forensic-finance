@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hmac
 from dataclasses import dataclass
+from typing import Optional
 
 from fastapi import Depends, HTTPException, Request
 
@@ -50,18 +51,29 @@ def _same(sent: str, expected: str) -> bool:
     return hmac.compare_digest(sent.encode("utf-8"), expected.encode("utf-8"))
 
 
+def _bearer(request: Request) -> Optional[str]:
+    authz = request.headers.get("authorization", "")
+    return authz[7:].strip() if authz[:7].lower() == "bearer " else None
+
+
+def resolve_principal(request: Request, ctx: ConsoleContext) -> Optional[Principal]:
+    """Who the request acts for right now (Bearer token or session cookie), or None. No CSRF check, so a long-lived
+    stream can ask again later."""
+    token = _bearer(request)
+    if token is not None:
+        return ctx.auth.resolve_bearer(token)
+    return ctx.auth.resolve_session(request.cookies.get(session_cookie_name(ctx.settings), ""))
+
+
 def current_principal(request: Request, ctx: ConsoleContext = Depends(get_ctx)) -> Principal:
     """Bearer token (API clients, CSRF-exempt: no cookie involved) or session cookie (browser, CSRF-checked)."""
-    authz = request.headers.get("authorization", "")
-    if authz[:7].lower() == "bearer ":
-        principal = ctx.auth.resolve_bearer(authz[7:].strip())
-        if principal is None:
-            raise ApiError(401, "invalid_token", "token inválido o revocado")
-        return principal
-    principal = ctx.auth.resolve_session(request.cookies.get(session_cookie_name(ctx.settings), ""))
+    principal = resolve_principal(request, ctx)
     if principal is None:
+        if _bearer(request) is not None:
+            raise ApiError(401, "invalid_token", "token inválido o revocado")
         raise ApiError(401, "unauthenticated", "inicia sesión")
-    if request.method not in SAFE_METHODS and not _same(request.headers.get(CSRF_HEADER, ""), principal.csrf or ""):
+    if (principal.via == "session" and request.method not in SAFE_METHODS
+            and not _same(request.headers.get(CSRF_HEADER, ""), principal.csrf or "")):
         raise ApiError(403, "csrf", "falta o no coincide la cabecera anti-CSRF")
     return principal
 

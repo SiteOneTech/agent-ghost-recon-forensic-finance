@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import mimetypes
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -39,6 +40,9 @@ SECURITY_HEADERS = {
     "Cross-Origin-Opener-Policy": "same-origin",
 }
 ROUTERS = (auth_routes, system_routes, cases_routes, audits_routes, fs_routes, jobs_routes, users_routes)
+INTERNAL_ERROR = {"error": {"code": "internal",
+                            "message": "error interno de la consola; el detalle quedó en el log del servidor"}}
+logger = logging.getLogger(__name__)
 
 
 def host_allowed(host_header: str, settings: ConsoleSettings) -> bool:
@@ -70,10 +74,15 @@ def create_app(settings: ConsoleSettings, store: Store, cstore: ConsoleStore, *,
 
     @app.middleware("http")
     async def guard(request: Request, call_next):
-        if host_allowed(request.headers.get("host", ""), settings):
-            response = await call_next(request)
-        else:
+        if not host_allowed(request.headers.get("host", ""), settings):
             response = JSONResponse({"error": {"code": "bad_host", "message": "host no permitido"}}, status_code=400)
+        else:
+            try:
+                response = await call_next(request)
+            except Exception:
+                # Starlette's last-resort handler answers outside this middleware: plain text, no security headers.
+                logger.exception("ghost-recon console: unhandled error on %s %s", request.method, request.url.path)
+                response = JSONResponse(INTERNAL_ERROR, status_code=500)
         for key, value in SECURITY_HEADERS.items():
             response.headers.setdefault(key, value)
         path = request.url.path
