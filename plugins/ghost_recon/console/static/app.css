@@ -152,6 +152,9 @@ dialog.modal::backdrop { background: rgba(16, 24, 38, .55); }
 .phase { padding: 5px 10px; border-radius: 14px; font-size: 12.5px; font-weight: 600; background: var(--gr-risk-low-bg);
   color: var(--gr-muted); }
 .phase.done { background: var(--gr-ok-bg); color: var(--gr-ok); }
+.phase.failed { background: var(--gr-risk-high-bg); color: var(--gr-risk-high); outline: 2px solid var(--gr-risk-high); }
+.phase.stopped { background: var(--gr-ghost-bg); color: var(--gr-muted); outline: 2px dashed var(--gr-muted); }
+.error.inline { display: inline-block; padding: 6px 10px; }
 .phase.current { background: var(--gr-info-bg); color: var(--gr-info); outline: 2px solid var(--gr-info); }
 .feed { list-style: none; margin: 0; padding: 0; max-height: 460px; overflow-y: auto; }
 .feed-item { display: grid; grid-template-columns: 72px 1fr; gap: 2px 10px; padding: 6px 4px; border-bottom: 1px solid var(--gr-row-border); }

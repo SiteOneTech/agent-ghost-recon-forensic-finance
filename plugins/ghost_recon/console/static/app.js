@@ -12,6 +12,7 @@ import * as system from "./views/system.js";
 
 const state = { user: null };
 let leaving = [];
+let generation = 0;
 
 const ROUTES = [
   { re: /^\/login$/, view: login, public: true },
@@ -30,9 +31,13 @@ const NAV = [
   { id: "system", label: "Sistema", href: "#/system" },
 ];
 
-/** Views register cleanups (EventSource, timers) that run when the user navigates away. */
-function onLeave(fn) {
-  leaving.push(fn);
+/** Views register cleanups (EventSource, timers) that run when the user navigates away. A render that was already
+ *  superseded registers late: its cleanup runs at once so nothing it opened outlives it. */
+function onLeaveFor(token) {
+  return (fn) => {
+    if (token === generation) leaving.push(fn);
+    else fn();
+  };
 }
 
 function leave() {
@@ -93,6 +98,9 @@ function onLogin(data) {
 }
 
 async function render() {
+  generation += 1;
+  const token = generation;
+  const current = () => token === generation;
   leave();
   const path = window.location.hash.replace(/^#/, "") || "/";
   const route = ROUTES.find((r) => r.re.test(path)) || ROUTES[1];
@@ -100,21 +108,26 @@ async function render() {
   const app = document.getElementById("app");
   app.classList.remove("boot");
   if (route.public) {
-    mount(app, await route.view.render({ params, onLogin }));
+    const page = await route.view.render({ params, onLogin });
+    if (current()) mount(app, page);
     return;
   }
-  if (!(await ensureSession())) {
+  const signedIn = await ensureSession();
+  if (!current()) return;
+  if (!signedIn) {
     window.location.hash = "#/login";
     return;
   }
   const { root, main } = shell(route.nav);
   mount(app, root);
   mount(main, h("p", { class: "muted" }, "Cargando…"));
+  let page;
   try {
-    mount(main, await route.view.render({ params, user: state.user, onLeave }));
+    page = await route.view.render({ params, user: state.user, onLeave: onLeaveFor(token) });
   } catch (err) {
-    mount(main, errorState(err));
+    page = errorState(err);
   }
+  if (current()) mount(main, page);
 }
 
 window.addEventListener("hashchange", render);

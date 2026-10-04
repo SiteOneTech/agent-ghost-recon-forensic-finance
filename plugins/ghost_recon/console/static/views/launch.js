@@ -4,6 +4,7 @@
 import { api } from "../lib/api.js";
 import { h, mount } from "../lib/dom.js";
 import { COMMAND_LABEL, fmtBytes, shortHash } from "../lib/format.js";
+import { latestGuard } from "../lib/latest.js";
 import { copyText, debounce, field, modal } from "./components.js";
 
 const MAX_NOTES = 20000;
@@ -36,19 +37,33 @@ export function launchPanel({ command, folder, inspect, onLaunched }) {
   const launch = h("button", { class: "btn", type: "button", disabled: true }, "Lanzar en segundo plano");
   const copy = h("button", { class: "btn ghost", type: "button", disabled: true }, "Copiar comando");
   let preview = null;
+  let launching = false;
+  const guard = latestGuard();
 
   const body = () => ({ command, folder, notes: notes.value,
     ...(withOptions ? { name: name.value, currency: currency.value, lang: lang.value } : {}) });
 
+  // Lanzar is only enabled while the shown command is the preview of exactly what body() would launch.
+  function invalidate() {
+    guard.next();
+    preview = null;
+    launch.disabled = true;
+    copy.disabled = true;
+  }
+
   async function refresh() {
+    const token = guard.next();
     try {
-      preview = await api("/jobs/preview", { method: "POST", body: body() });
+      const result = await api("/jobs/preview", { method: "POST", body: body() });
+      if (!guard.isLatest(token)) return;
+      preview = result;
       cmd.textContent = preview.display;
       mount(notice, preview.queue_note ? h("p", { class: "notice" }, preview.queue_note) : null);
-      launch.disabled = false;
+      launch.disabled = launching;
       copy.disabled = Boolean(preview.notes);
       copy.title = preview.notes ? "Con notas adicionales, lanza desde la consola: el archivo de contexto se crea al lanzar." : "";
     } catch (err) {
+      if (!guard.isLatest(token)) return;
       preview = null;
       cmd.textContent = "—";
       mount(notice, problem(err.message));
@@ -58,17 +73,20 @@ export function launchPanel({ command, folder, inspect, onLaunched }) {
   }
 
   const later = debounce(refresh, 300);
-  for (const el of [name, currency, notes]) el.addEventListener("input", later);
-  lang.addEventListener("change", refresh);
+  for (const el of [name, currency, notes]) el.addEventListener("input", () => { invalidate(); later(); });
+  lang.addEventListener("change", () => { invalidate(); refresh(); });
   notes.addEventListener("input", () => { counter.textContent = `${notes.value.length} / ${MAX_NOTES}`; });
   launch.addEventListener("click", async () => {
+    if (!preview) return;
+    launching = true;
     launch.disabled = true;
     launch.textContent = "Lanzando…";
     try {
       onLaunched((await api("/jobs", { method: "POST", body: body() })).job);
     } catch (err) {
       mount(notice, problem(err.message));
-      launch.disabled = false;
+      launching = false;
+      launch.disabled = !preview;
       launch.textContent = "Lanzar en segundo plano";
     }
   });

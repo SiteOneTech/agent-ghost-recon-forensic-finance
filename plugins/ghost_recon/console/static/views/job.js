@@ -2,17 +2,34 @@
 // the agent's summary, seal state, deliverables, tokens and the technical log.
 import { api } from "../lib/api.js";
 import { h, mount } from "../lib/dom.js";
-import { COMMAND_LABEL, fmtDate, fmtDuration, jobChip, label, sealCheckChip, secondsSince } from "../lib/format.js";
+import { COMMAND_LABEL, fmtDate, fmtDuration, jobChip, label, safeHref, sealCheckChip, secondsSince } from "../lib/format.js";
+import { latestGuard } from "../lib/latest.js";
 import { copyButton, kpi } from "./components.js";
 
 const FEED_MAX = 500;
 const FINDING_KINDS = ["exception", "anomaly", "finding", "question"];
 
-function phaseBar(job, seen) {
-  return h("ol", { class: "phases", "aria-label": "Fases" }, job.phases.map((p) => {
-    const state = p.id === job.phase ? (job.active ? "current" : "done") : seen.has(p.id) ? "done" : "pending";
-    return h("li", { class: `phase ${state}`, "aria-current": state === "current" ? "step" : null }, p.label);
-  }));
+// Phase states come from where the run got to: while it runs the latest phase event wins over a possibly stale
+// job.phase. A run that ended badly marks where it stopped with its own state and a text label (not colour alone).
+const STOP_LABEL = { failed: "fallida", cancelled: "cancelada", orphaned: "interrumpida" };
+
+function phaseStates(job, lastSeen) {
+  const ids = job.phases.map((p) => p.id);
+  if (job.status === "succeeded") return ids.map(() => "done");
+  const reached = job.active ? ids.indexOf(lastSeen || job.phase) : Math.max(ids.indexOf(job.phase), ids.indexOf(lastSeen));
+  const stop = job.status === "failed" ? "failed" : "stopped";
+  return ids.map((_, i) => {
+    if (i < reached) return "done";
+    if (i > reached) return "pending";
+    return job.active ? "current" : stop;
+  });
+}
+
+function phaseBar(job, lastSeen) {
+  const states = phaseStates(job, lastSeen);
+  return h("ol", { class: "phases", "aria-label": "Fases" }, job.phases.map((p, i) => h("li",
+    { class: `phase ${states[i]}`, "aria-current": states[i] === "current" ? "step" : null },
+    states[i] === "failed" || states[i] === "stopped" ? `${p.label} (${STOP_LABEL[job.status] || "detenida"})` : p.label)));
 }
 
 function feedItem(e) {
@@ -73,7 +90,10 @@ function technicalLog(jobId) {
 export async function render({ params, user, onLeave }) {
   const jobId = Number(params[0]);
   let job = await api(`/jobs/${jobId}`);
-  const seen = new Set();
+  let lastSeen = null;
+  const guard = latestGuard();
+  let cancelError = null;
+  const notice = h("div");
   const feed = h("ol", { class: "feed" }, h("li", { class: "feed-empty muted" }, "Esperando la primera actividad del agente…"));
   const head = h("div");
   const bar = h("div");
@@ -93,19 +113,25 @@ export async function render({ params, user, onLeave }) {
         if (!window.confirm("¿Cancelar esta ejecución? La auditoría a medio hacer queda abierta, sin sellar.")) return;
         cancel.disabled = true;
         try {
-          job = (await api(`/jobs/${jobId}/cancel`, { method: "POST" })).job;
+          const cancelled = (await api(`/jobs/${jobId}/cancel`, { method: "POST" })).job;
+          guard.next();
+          cancelError = null;
+          job = cancelled;
           paint();
         } catch (err) {
-          cancel.disabled = false;
-          cancel.title = err.message;
+          cancelError = err.message;
+          await refresh();
+          paint();
         }
       });
       items.push(cancel);
     }
+    if (cancelError) items.push(h("span", { class: "error inline", role: "alert" }, `No se pudo cancelar: ${cancelError}`));
     items.push(job.resume ? copyButton(job.resume.terminal, "Continuar en terminal")
       : h("button", { class: "btn ghost", type: "button", disabled: true, title: "Aparece cuando el agente informa su sesión." }, "Continuar en terminal"));
-    if (job.resume && job.resume.chat_url) {
-      items.push(h("a", { class: "btn ghost", href: job.resume.chat_url, target: "_blank", rel: "noopener noreferrer" }, "Continuar en chat"));
+    const chatHref = job.resume ? safeHref(job.resume.chat_url) : null;
+    if (chatHref) {
+      items.push(h("a", { class: "btn ghost", href: chatHref, target: "_blank", rel: "noopener noreferrer" }, "Continuar en chat"));
     }
     return items;
   }
@@ -119,7 +145,7 @@ export async function render({ params, user, onLeave }) {
           jobChip(job.status), " ", duration)),
       h("div", { class: "actions" }, actions())));
     tick();
-    mount(bar, phaseBar(job, seen));
+    mount(bar, phaseBar(job, lastSeen));
     mount(progressBox, counters(job.progress));
     mount(result, outcome(job));
   }
@@ -130,15 +156,25 @@ export async function render({ params, user, onLeave }) {
     if (placeholder) placeholder.remove();
     const atBottom = feed.scrollHeight - feed.scrollTop - feed.clientHeight < 40;
     for (const e of items) {
-      if (e.kind === "phase" && e.phase) seen.add(e.phase);
+      if (e.kind === "phase" && e.phase) lastSeen = e.phase;
       feed.append(feedItem(e));
     }
     while (feed.children.length > FEED_MAX) feed.firstElementChild.remove();
     if (atBottom) feed.scrollTop = feed.scrollHeight;
   }
 
+  // Never throws; an older response that lands after a newer one is dropped.
   async function refresh() {
-    job = await api(`/jobs/${jobId}`);
+    const token = guard.next();
+    try {
+      const fresh = await api(`/jobs/${jobId}`);
+      if (!guard.isLatest(token)) return;
+      job = fresh;
+      mount(notice, null);
+    } catch (err) {
+      if (guard.isLatest(token)) mount(notice, h("p", { class: "notice" }, `No se pudo actualizar la ejecución: ${err.message}`));
+      return;
+    }
     paint();
   }
 
@@ -152,7 +188,7 @@ export async function render({ params, user, onLeave }) {
     source.addEventListener("event", (msg) => {
       const e = JSON.parse(msg.data);
       addEvents([e]);
-      if (e.kind === "phase") mount(bar, phaseBar(job, seen));
+      if (e.kind === "phase") mount(bar, phaseBar(job, lastSeen));
     });
     source.addEventListener("status", () => { refresh(); });
     source.addEventListener("end", () => {
@@ -165,7 +201,7 @@ export async function render({ params, user, onLeave }) {
     timers.forEach(clearInterval);
     if (source) source.close();
   });
-  return h("div", { class: "page" }, head, bar,
+  return h("div", { class: "page" }, head, notice, bar,
     h("div", { class: "grid-2" },
       h("section", { class: "card" }, h("h2", {}, "Actividad"), feed),
       h("section", { class: "card" }, h("h2", {}, "Hasta ahora"), progressBox)),
