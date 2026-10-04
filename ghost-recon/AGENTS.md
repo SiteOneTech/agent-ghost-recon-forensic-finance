@@ -29,10 +29,14 @@ genérica de plugins (ver `plugins/AGENTS.md`), nunca se cablea lógica Ghost Re
 - La consola (`plugins/ghost_recon/console/`) **solo escribe** sus tablas `console_*`, el archivo de contexto combinado
   (`<resultados>/_console/context_<hash>.md`), los eventos `console_job_*` y `results_exported` de la cronología del
   caso (con `Store.add_event`) y, bajo `<plugin-data>/ghost-recon/console/`, los ZIP de `exports/` (más su `.sha256`) y
-  los archivos de `jobs/`; `housekeeping.py` es el único sitio que los borra. Los datos de caso se leen por `core`
-  (`Store`, `service`). Toda carpeta que llega del navegador pasa por `console/fsjail.resolve` (dentro de `case_roots`) y
-  toda descarga por `console/paths.resolve_within`. En el frontend, nada de `innerHTML` con datos: siempre `h()`
-  (`static/lib/dom.js`).
+  los archivos de `jobs/`. Solo borran esos archivos: `housekeeping.py` (retención de ZIP con `prune_exports`, que
+  `ExportService` también llama tras cada construcción, y archivos de ejecuciones terminadas), `exporter.build` (su
+  propio `.part`, o el ZIP si falla su `.sha256`) y `ExportService.recover` (al arrancar, todo ZIP, `.sha256` o `.part`
+  que no sea de una exportación terminada); en `exports/` siempre como nombre simple vía `paths.file_inside`. Los datos
+  de caso se leen por `core` (`Store`, `service`). Toda carpeta que llega del navegador pasa por `console/fsjail.resolve`
+  (dentro de `case_roots`); toda descarga de un archivo de caso, por `console/paths.resolve_within`, y la de un ZIP o su
+  `.sha256`, por `ExportService._inside` (nombre simple directamente dentro de `exports/`). En el frontend, nada de
+  `innerHTML` con datos: siempre `h()` (`static/lib/dom.js`).
 - Un archivo de una auditoría sellada solo sale de la consola tras `console/integrity.py` (descarga de entregables y ZIP):
   se vuelve a hashear contra `SEALED.json`. El ZIP solo lee la carpeta de resultados y nunca sigue enlaces.
 - La raíz del repositorio ignora `export*`; `plugins/ghost_recon/console/.gitignore` los reincluye. Un módulo nuevo de la
