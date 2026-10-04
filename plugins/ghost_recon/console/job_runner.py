@@ -239,8 +239,9 @@ class Runner:
             try:
                 code = proc.wait(timeout=NOTIFY_TIMEOUT_S)
             except subprocess.TimeoutExpired:
-                procs.kill_tree(proc.pid, started)
-                proc.wait()
+                if not procs.kill_tree(proc.pid, started):
+                    proc.kill()  # identity unreadable: kill_tree refused, so at least stop the direct child
+                proc.wait(timeout=10)
                 logger.warning("ghost-recon job runner: hermes send timed out after %ss and was stopped",
                                NOTIFY_TIMEOUT_S)
                 return
