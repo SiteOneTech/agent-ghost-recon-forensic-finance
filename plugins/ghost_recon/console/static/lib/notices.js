@@ -122,11 +122,15 @@ export function noticeToggle(username) {
   paint();
   box.addEventListener("change", async () => {
     const wish = box.checked;
-    if (wish && Notification.permission === "default") await Notification.requestPermission();
     remember(wish);
-    paint();
+    paint(); // before the prompt: an unanswered permission request never resolves, and the note must show meanwhile
     known = null; // a fresh baseline: only jobs ending after the switch announce
     poll(); // start (or stop) watching right away
+    if (wish && Notification.permission === "default") {
+      await Notification.requestPermission();
+      paint();
+      poll();
+    }
   });
   return wrap;
 }

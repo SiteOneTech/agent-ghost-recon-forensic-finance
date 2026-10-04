@@ -1,6 +1,6 @@
 import { api } from "../../lib/api.js";
 import { h, mount } from "../../lib/dom.js";
-import { chip, fmtBytes, shortHash } from "../../lib/format.js";
+import { chip, fmtBytes, label, shortHash } from "../../lib/format.js";
 import { dataTable, debounce, errorState, tableExport } from "../components.js";
 
 const PAGE = 100;
@@ -8,7 +8,7 @@ const PAGE = 100;
 export async function render({ caseId, detail }) {
   const stats = await api(`/cases/${encodeURIComponent(caseId)}/evidence/stats`);
   const status = h("select", { "aria-label": "Estado" }, h("option", { value: "" }, "Todos los estados"),
-    Object.keys(stats.statuses).filter((k) => k !== "total").map((k) => h("option", { value: k }, k)));
+    Object.keys(stats.statuses).filter((k) => k !== "total").map((k) => h("option", { value: k }, label.evidenceStatus(k))));
   const audit = h("select", { "aria-label": "Auditoría" }, h("option", { value: "" }, "Todas las auditorías"),
     detail.audits.filter((a) => a.kind !== "review").map((a) => h("option", { value: a.seq }, `Primera vez en ${a.seq}`)));
   const q = h("input", { type: "search", placeholder: "Buscar por ruta, nombre o hash…", "aria-label": "Buscar evidencia" });
@@ -21,7 +21,7 @@ export async function render({ caseId, detail }) {
     { title: "Ruta", cell: (e) => h("span", { class: "mono" }, e.path) },
     { title: "Tipo", cell: (e) => e.ext || "—" },
     { title: "Tamaño", class: "num", cell: (e) => fmtBytes(e.size) },
-    { title: "Estado", cell: (e) => chip(e.status, e.status.startsWith("DUP") ? "risk-medium" : "muted") },
+    { title: "Estado", cell: (e) => chip(label.evidenceStatus(e.status), e.status.startsWith("DUP") ? "risk-medium" : "muted") },
     { title: "Bloque", cell: (e) => e.block },
     { title: "Auditoría", cell: (e) => (e.first_audit_id ? e.first_audit_id.split("/").pop() : "—") },
     { title: "SHA-256", cell: (e) => h("span", { class: "mono", title: e.sha256 }, shortHash(e.sha256)) },
