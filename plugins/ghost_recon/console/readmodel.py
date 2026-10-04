@@ -10,6 +10,7 @@ from urllib.parse import quote
 from ..core import ids
 from ..core.db import Store
 from . import events
+from .commands import display_command
 from .paths import case_results_root
 from .store import ACTIVE_STATUSES, ConsoleStore
 
@@ -179,7 +180,7 @@ def job_view(store: Store, cstore: ConsoleStore, job: Dict[str, Any], *, profile
     audits = store.list_audits(job["case_id"]) if job.get("case_id") else []
     resume = None
     if session:
-        resume = {"terminal": " ".join(["hermes", *profile_args, "--resume", session]),
+        resume = {"terminal": display_command(["hermes", *profile_args, "--resume", session]),
                   "chat_url": f"{dashboard_url}/chat?resume={quote(session)}" if dashboard_url else None}
     return {**job_row(store, job), "args": job.get("args") or {}, "argv": job.get("argv") or [],
             "context_file": job.get("context_file"), "session_id": session or None, "exit_code": job.get("exit_code"),

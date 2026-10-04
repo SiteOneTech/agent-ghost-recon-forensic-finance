@@ -307,15 +307,19 @@ class ConsoleStore:
         return self._one("SELECT * FROM console_jobs WHERE id=?", (int(job_id),))
 
     def list_jobs(self, *, statuses: Iterable[str] = (), case_id: str = "", folder: str = "", limit: int = 200,
-                  oldest_first: bool = False) -> List[Dict[str, Any]]:
+                  oldest_first: bool = False, before_id: Optional[int] = None) -> List[Dict[str, Any]]:
         """Newest first (oldest first for the dispatcher). ``case_id`` and ``folder`` together match either: a
-        case's jobs include the ones launched on its folder before the case existed."""
+        case's jobs include the ones launched on its folder before the case existed. ``before_id`` continues a
+        newest-first page after the last id it returned."""
         where: List[str] = []
         args: List[Any] = []
         statuses = tuple(statuses)
         if statuses:
             where.append(f"status IN ({','.join('?' * len(statuses))})")
             args += statuses
+        if before_id is not None:
+            where.append("id < ?")
+            args.append(int(before_id))
         scope = [(col, value) for col, value in (("case_id", case_id), ("folder", folder)) if value]
         if scope:
             where.append("(" + " OR ".join(f"{col}=?" for col, _ in scope) + ")")

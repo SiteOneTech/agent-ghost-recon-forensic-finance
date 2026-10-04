@@ -1,6 +1,9 @@
 """Job endpoints: role gates, the preview is what runs, live events (JSON and SSE), cancel, log, Home counters."""
 import json
+import shlex
 from dataclasses import replace
+
+import pytest
 
 from plugins.ghost_recon.console.events import PHASES
 from plugins.ghost_recon.console.store import TERMINAL_STATUSES
@@ -115,6 +118,46 @@ def test_a_finished_job_offers_terminal_and_chat_resume(store, cstore, auth, set
     assert done["resume"]["chat_url"] == f"http://127.0.0.1:9119/chat?resume={sid}"
     assert done["progress"]["evidence"] >= 1 and done["tokens"]["total"] > 0 and done["result_text"]
     assert [p["id"] for p in done["phases"]] == [p for p, _ in PHASES]
+
+
+ODD_SESSION = 'sesión "rara" 2026'
+
+
+def _resume_command(login_as, cstore, case_root):
+    job = cstore.create_job(command="new-open-case", folder=str(_folder(case_root, "Caso Sesión")), args={},
+                            argv=["hermes"], launched_by="jean")
+    cstore.update_job(job["id"], status="succeeded", session_id=ODD_SESSION)
+    return login_as("viewer").get(f"/api/v1/jobs/{job['id']}").json()["resume"]["terminal"]
+
+
+@pytest.mark.platforms("posix")
+def test_the_resume_command_quotes_the_session_id_posix(login_as, cstore, case_root):
+    assert shlex.split(_resume_command(login_as, cstore, case_root))[-2:] == ["--resume", ODD_SESSION]
+
+
+@pytest.mark.platforms("windows")
+def test_the_resume_command_quotes_the_session_id_windows(login_as, cstore, case_root):
+    import ctypes
+    count = ctypes.c_int()
+    to_argv = ctypes.windll.shell32.CommandLineToArgvW
+    to_argv.restype = ctypes.POINTER(ctypes.c_wchar_p)
+    parsed = to_argv(_resume_command(login_as, cstore, case_root), ctypes.byref(count))
+    assert [parsed[i] for i in range(count.value)][-2:] == ["--resume", ODD_SESSION]
+
+
+def test_the_job_list_pages_with_a_working_cursor(login_as, cstore, case_root):
+    folder = str(_folder(case_root, "Caso Páginas"))
+    ids = [cstore.create_job(command="new-open-case", folder=folder, args={}, argv=["x"], launched_by="jean")["id"]
+           for _ in range(3)]
+    for job_id in ids:
+        cstore.update_job(job_id, status="succeeded")
+    c = login_as("viewer")
+    first = c.get("/api/v1/jobs", params={"limit": 2}).json()
+    assert len(first["items"]) == 2 and first["next_cursor"]
+    rest = c.get("/api/v1/jobs", params={"limit": 2, "cursor": first["next_cursor"]}).json()
+    assert rest["next_cursor"] is None
+    assert [j["id"] for j in first["items"] + rest["items"]] == sorted(ids, reverse=True)  # newest first, no gaps
+    assert c.get("/api/v1/jobs", params={"cursor": "abc"}).status_code == 422
 
 
 def test_home_counts_active_jobs_and_cancel_stops_them(login_as, case_root, wait_until):

@@ -85,14 +85,21 @@ def cancel(job_id: int, request: Request, principal: Principal = Depends(require
 
 
 @router.get("/jobs")
-def list_jobs(status: str = "", case: str = "", limit: int = Query(100, ge=1, le=500),
+def list_jobs(status: str = "", case: str = "", cursor: str = "", limit: int = Query(100, ge=1, le=500),
               _: Principal = Depends(require("viewer")), ctx: ConsoleContext = Depends(get_ctx)):
+    """Newest first; ``next_cursor`` (the last id returned) continues the list while more rows exist."""
     if status and status != "active" and status not in JOB_STATUSES:
         raise ApiError(422, "invalid_argument", f"estado desconocido: {status}")
+    if cursor and not (cursor.isascii() and cursor.isdigit()):
+        raise ApiError(422, "invalid_argument", f"cursor inválido: {cursor}")
     statuses = ACTIVE_STATUSES if status == "active" else ((status,) if status else ())
     folder = get_case_or_404(ctx, case)["root_path"] if case else ""
-    rows = ctx.cstore.list_jobs(statuses=statuses, case_id=case, folder=folder, limit=limit)
-    return {"items": [readmodel.job_row(ctx.store, j) for j in rows], "next_cursor": None}
+    rows = ctx.cstore.list_jobs(statuses=statuses, case_id=case, folder=folder, limit=limit + 1,
+                                before_id=int(cursor) if cursor else None)
+    more = len(rows) > limit
+    rows = rows[:limit]
+    return {"items": [readmodel.job_row(ctx.store, j) for j in rows],
+            "next_cursor": str(rows[-1]["id"]) if more else None}
 
 
 @router.get("/cases/{case_id}/jobs")
