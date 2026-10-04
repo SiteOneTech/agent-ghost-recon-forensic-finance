@@ -1,18 +1,113 @@
-"""Export endpoints (viewer): the case tables as CSV/XLSX with the filters of their JSON endpoints."""
+"""Export endpoints (viewer): the results ZIP of a case or an audit (built in the background; unsealed audits only for
+an admin) and the case tables as CSV/XLSX with the filters of their JSON endpoints."""
 
 from __future__ import annotations
 
 from dataclasses import asdict
+from typing import Literal, Optional
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Query, Request
+from fastapi.responses import FileResponse
+from pydantic import BaseModel, Field
 
 from .. import readmodel, tables
 from ..auth import Principal
 from ..deps import ApiError, ConsoleContext, client_ip, get_ctx, require
 from ..downloads import attachment
+from ..exporter import ExportError
+from ..store import EXPORT_PENDING
 from .cases import get_case_or_404
 
 router = APIRouter(tags=["exports"])
+SEQ_PATTERN = r"^[AR]\d{2,3}$"
+
+
+class ExportBody(BaseModel):
+    scope: Literal["case", "audit"] = "case"
+    seq: Optional[str] = Field(None, pattern=SEQ_PATTERN)
+    include_unsealed: Optional[bool] = None  # None: the configured default (export_include_unsealed), admins only
+
+
+def _include_unsealed(ctx: ConsoleContext, principal: Principal, asked: Optional[bool]) -> bool:
+    if asked is None:
+        return ctx.settings.export_include_unsealed and principal.has("admin")
+    if asked and not principal.has("admin"):
+        raise ApiError(403, "forbidden", "solo un admin exporta auditorías sin sellar")
+    return asked
+
+
+def _scope(scope: str, seq: Optional[str]) -> None:
+    if scope == "audit" and not seq:
+        raise ApiError(422, "invalid_argument", "falta la auditoría (seq) para exportar una sola auditoría")
+
+
+def _export_or_404(ctx: ConsoleContext, export_id: int) -> dict:
+    row = ctx.cstore.get_export(export_id)
+    if not row:
+        raise ApiError(404, "not_found", f"exportación no encontrada: {export_id}")
+    return row
+
+
+@router.get("/cases/{case_id}/export/preview")
+def export_preview(case_id: str, scope: Literal["case", "audit"] = "case",
+                   seq: Optional[str] = Query(None, pattern=SEQ_PATTERN), include_unsealed: Optional[bool] = None,
+                   principal: Principal = Depends(require("viewer")), ctx: ConsoleContext = Depends(get_ctx)):
+    """What an export would take and why the other audits stay out, without building anything."""
+    case = get_case_or_404(ctx, case_id)
+    _scope(scope, seq)
+    include = _include_unsealed(ctx, principal, include_unsealed)
+    try:
+        view = ctx.exports.preview(case, scope=scope, seq=seq, include_unsealed=include)
+    except ExportError as exc:
+        raise ApiError(exc.status, exc.code, exc.message) from exc
+    return {**view, "include_unsealed": include, "can_include_unsealed": principal.has("admin")}
+
+
+@router.post("/cases/{case_id}/export", status_code=202)
+def export_case(case_id: str, body: ExportBody, request: Request, principal: Principal = Depends(require("viewer")),
+                ctx: ConsoleContext = Depends(get_ctx)):
+    case = get_case_or_404(ctx, case_id)
+    _scope(body.scope, body.seq)
+    include = _include_unsealed(ctx, principal, body.include_unsealed)
+    try:
+        row = ctx.exports.request(case, scope=body.scope, seq=body.seq, include_unsealed=include,
+                                  principal=principal, ip=client_ip(request))
+    except ExportError as exc:
+        raise ApiError(exc.status, exc.code, exc.message) from exc
+    return {"export_id": row["id"], "export": row}
+
+
+@router.get("/exports/{export_id}")
+def export_status(export_id: int, _: Principal = Depends(require("viewer")), ctx: ConsoleContext = Depends(get_ctx)):
+    """State, progress (files_done / files_total), size and SHA-256 once built."""
+    return _export_or_404(ctx, export_id)
+
+
+def _finished_file(ctx: ConsoleContext, row: dict):
+    if row["status"] in EXPORT_PENDING:
+        raise ApiError(409, "not_ready", "el ZIP todavía se está construyendo")
+    path = ctx.exports.file_path(row)
+    if path is None:
+        raise ApiError(410, "gone", "este ZIP no está disponible (falló o se eliminó por antigüedad): vuelve a exportar")
+    return path
+
+
+@router.get("/exports/{export_id}/download")
+def export_download(export_id: int, request: Request, principal: Principal = Depends(require("viewer")),
+                    ctx: ConsoleContext = Depends(get_ctx)):
+    row = _export_or_404(ctx, export_id)
+    path = _finished_file(ctx, row)
+    ctx.cstore.log("export_download", user_id=principal.user_id, username=principal.username, ip=client_ip(request),
+                   target=f"export:{export_id}", detail={"case_id": row["case_id"], "file": row["file_name"]})
+    return FileResponse(path, filename=row["file_name"], media_type="application/zip")
+
+
+@router.get("/exports/{export_id}/sha256")
+def export_sidecar(export_id: int, _: Principal = Depends(require("viewer")), ctx: ConsoleContext = Depends(get_ctx)):
+    """The ``<zip>.sha256`` beside the archive (``sha256sum -c`` format)."""
+    path = _finished_file(ctx, _export_or_404(ctx, export_id))
+    sidecar = path.with_name(f"{path.name}.sha256")
+    return attachment(sidecar.read_bytes(), sidecar.name, "text/plain; charset=utf-8")
 
 
 @router.get("/cases/{case_id}/{table}.{fmt}")

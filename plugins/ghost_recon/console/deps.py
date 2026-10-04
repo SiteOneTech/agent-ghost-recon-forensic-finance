@@ -10,6 +10,7 @@ from fastapi import Depends, HTTPException, Request
 
 from ..core.db import Store
 from .auth import AuthService, Principal
+from .exports import ExportService
 from .jobs import JobService
 from .settings import ConsoleSettings
 from .store import ConsoleStore
@@ -32,6 +33,7 @@ class ConsoleContext:
     cstore: ConsoleStore
     auth: AuthService
     jobs: JobService
+    exports: ExportService
 
 
 def get_ctx(request: Request) -> ConsoleContext:

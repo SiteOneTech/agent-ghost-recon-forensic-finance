@@ -19,6 +19,8 @@ from ..core.db import Store
 from . import CONSOLE_VERSION
 from .auth import AuthService
 from .deps import ConsoleContext, current_principal
+from .exports import ExportService
+from .housekeeping import Housekeeping
 from .jobs import JobService
 from .routers import (audits as audits_routes, auth as auth_routes, cases as cases_routes, exports as exports_routes,
                       fs as fs_routes, jobs as jobs_routes, system as system_routes, users as users_routes)
@@ -57,21 +59,28 @@ def host_allowed(host_header: str, settings: ConsoleSettings) -> bool:
 
 
 def create_app(settings: ConsoleSettings, store: Store, cstore: ConsoleStore, *,
-               auth: Optional[AuthService] = None, jobs: Optional[JobService] = None) -> FastAPI:
+               auth: Optional[AuthService] = None, jobs: Optional[JobService] = None,
+               exports: Optional[ExportService] = None, housekeeping: Optional[Housekeeping] = None) -> FastAPI:
     jobs = jobs or JobService(cstore, store, settings)
+    exports = exports or ExportService(cstore, store, settings)
+    housekeeping = housekeeping or Housekeeping(cstore, settings, exports_dir=exports.dir, jobs_dir=jobs.jobs_dir)
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         jobs.start()  # find running jobs again, mark orphans, dispatch the queue; then tick in the background
+        exports.start()  # fail the builds a previous server left unfinished; then build in the background
+        housekeeping.start()  # sessions, old ZIPs and old job files: now, then every hour
         try:
             yield
         finally:
+            housekeeping.stop()
+            exports.stop()
             jobs.stop()
 
     app = FastAPI(title="Ghost Recon Console", version=CONSOLE_VERSION, docs_url=None, redoc_url=None,
                   openapi_url=None, lifespan=lifespan)
     app.state.gr = ConsoleContext(settings=settings, store=store, cstore=cstore,
-                                  auth=auth or AuthService(cstore, settings), jobs=jobs)
+                                  auth=auth or AuthService(cstore, settings), jobs=jobs, exports=exports)
 
     @app.middleware("http")
     async def guard(request: Request, call_next):
