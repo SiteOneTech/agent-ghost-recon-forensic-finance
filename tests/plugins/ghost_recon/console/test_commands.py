@@ -130,7 +130,7 @@ def test_the_combined_file_name_is_stable_so_the_preview_is_exact(plan_for, fres
     assert a["argv"] == b["argv"] and a["context_file"] != c["context_file"]
 
 
-def test_a_context_md_changed_after_the_preview_is_refused(plan_for, fresh):
+def test_a_context_md_changed_between_the_plan_and_the_write_is_refused(plan_for, fresh):
     (fresh / "context.md").write_bytes(b"uno\n")
     p = plan_for("new-open-case", fresh, notes="nota")
     (fresh / "context.md").write_bytes(b"dos\n")

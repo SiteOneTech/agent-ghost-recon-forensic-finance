@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Literal
+from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import StreamingResponse
@@ -30,6 +30,8 @@ class LaunchBody(BaseModel):
     lang: str = Field("", max_length=16)
     out: str = Field("", max_length=4096)
     notes: str = Field("", max_length=100_000)  # commands.plan enforces MAX_NOTES with a clear message
+    # SHA-256 of the context.md the preview showed ("none": it had none); a launch refuses one changed since then.
+    context_sha256: Optional[str] = Field(None, pattern=r"^([0-9a-f]{64}|none)$")
 
     def to_request(self) -> LaunchRequest:
         return LaunchRequest(**self.model_dump())

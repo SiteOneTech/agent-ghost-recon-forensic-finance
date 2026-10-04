@@ -13,6 +13,8 @@ function problem(text) {
   return h("div", { class: "error", role: "alert" }, text);
 }
 
+const contextSha = (context) => (context ? context.sha256 : "none");
+
 function contextBlock(context) {
   if (!context) return h("p", { class: "muted" }, "La carpeta no tiene context.md.");
   return h("div", {},
@@ -38,6 +40,8 @@ export function launchPanel({ command, folder, inspect, onLaunched }) {
   const copy = h("button", { class: "btn ghost", type: "button", disabled: true }, "Copiar comando");
   let preview = null;
   let launching = false;
+  let shown = inspect.context; // the context.md the operator is looking at
+  const contextBox = h("div", {}, contextBlock(shown));
   const guard = latestGuard();
 
   const body = () => ({ command, folder, notes: notes.value,
@@ -56,6 +60,16 @@ export function launchPanel({ command, folder, inspect, onLaunched }) {
     try {
       const result = await api("/jobs/preview", { method: "POST", body: body() });
       if (!guard.isLatest(token)) return;
+      if (contextSha(result.original_context) !== contextSha(shown)) {
+        // context.md changed since it was shown: show the current one before anything can be launched with it.
+        shown = (await api("/fs/inspect", { query: { path: folder } })).context;
+        if (!guard.isLatest(token)) return;
+        mount(contextBox, h("p", { class: "notice" }, "El context.md de la carpeta cambió: esta es la versión actual."),
+          contextBlock(shown));
+        if (contextSha(result.original_context) !== contextSha(shown)) {
+          throw new Error("El context.md de la carpeta está cambiando: espera a que termine y vuelve a intentarlo.");
+        }
+      }
       preview = result;
       cmd.textContent = preview.display;
       mount(notice, preview.queue_note ? h("p", { class: "notice" }, preview.queue_note) : null);
@@ -81,13 +95,21 @@ export function launchPanel({ command, folder, inspect, onLaunched }) {
     launching = true;
     launch.disabled = true;
     launch.textContent = "Lanzando…";
+    // The context.md the operator reviewed: the server refuses the launch (409) if it changed since the preview.
+    const reviewed = contextSha(preview.original_context);
     try {
-      onLaunched((await api("/jobs", { method: "POST", body: body() })).job);
+      onLaunched((await api("/jobs", { method: "POST", body: { ...body(), context_sha256: reviewed } })).job);
     } catch (err) {
-      mount(notice, problem(err.message));
       launching = false;
-      launch.disabled = !preview;
       launch.textContent = "Lanzar en segundo plano";
+      if (err.code === "context_changed") {
+        invalidate();
+        await refresh(); // shows the current context.md and its command
+        notice.prepend(problem(err.message));
+        return;
+      }
+      mount(notice, problem(err.message));
+      launch.disabled = !preview;
     }
   });
   copy.addEventListener("click", async () => {
@@ -100,7 +122,7 @@ export function launchPanel({ command, folder, inspect, onLaunched }) {
     withOptions ? h("div", { class: "grid-3" },
       field("Nombre del caso", name), field("Moneda (ISO-4217)", currency), field("Idioma de los entregables", lang)) : null,
     h("h3", {}, "Contexto"),
-    contextBlock(inspect.context),
+    contextBox,
     field("Notas adicionales (opcional)", notes, "Markdown. Se guardan junto a los resultados del caso, nunca entre la evidencia."),
     counter,
     h("h3", {}, "Comando exacto"),

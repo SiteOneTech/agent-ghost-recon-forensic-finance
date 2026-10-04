@@ -27,6 +27,8 @@ _UNSAFE_RE = re.compile(r'["\x00-\x1f\x7f]')
 NO_ROOTS_MESSAGE = ("La consola no tiene carpetas de casos configuradas. Pide a quien administra la máquina que añada "
                     "la carpeta de casos en case_roots (config.yaml → plugins.entries.ghost-recon.settings.console) "
                     "y reinicie la consola.")
+NO_CONTEXT = "none"  # LaunchRequest.context_sha256 when the preview showed no context.md
+CONTEXT_CHANGED_MESSAGE = "El context.md de la carpeta cambió desde la vista previa: revísalo de nuevo y vuelve a lanzar."
 MISSING_ROOTS_MESSAGE = ("Ninguna de las carpetas de casos configuradas en case_roots existe en esta máquina. Pide a "
                          "quien administra la máquina que la cree o corrija la configuración.")
 
@@ -75,6 +77,7 @@ class LaunchRequest:
     lang: str = ""
     out: str = ""
     notes: str = ""
+    context_sha256: Optional[str] = None  # the context.md the operator reviewed ("none": the preview had none)
 
 
 def _q(text: str) -> str:
@@ -187,6 +190,8 @@ def plan(req: LaunchRequest, *, store: Store, roots: Sequence[Path], audits_dirn
     results_root = _results_root(out or case_results, roots)
     found = fsjail.context_info(folder, roots)
     original = {k: found[k] for k in ("path", "sha256", "size")} if found else None
+    if req.context_sha256 is not None and req.context_sha256 != (original or {}).get("sha256", NO_CONTEXT):
+        raise CommandError(409, "context_changed", CONTEXT_CHANGED_MESSAGE)
     if notes:
         context_file = str(results_root / CONSOLE_DIR / combined_name((original or {}).get("sha256", ""), notes,
                                                                      username))
@@ -207,8 +212,7 @@ def combined_context_text(plan_: Dict[str, Any], username: str, now: str) -> str
     if original:
         data = Path(original["path"]).read_bytes()
         if hashlib.sha256(data).hexdigest() != original["sha256"]:
-            raise CommandError(409, "context_changed",
-                               "El context.md cambió mientras se preparaba la ejecución: vuelve a revisarlo y lanza otra vez.")
+            raise CommandError(409, "context_changed", CONTEXT_CHANGED_MESSAGE)
         source = f"Fuente: {original['path']} · SHA-256 {original['sha256']}"
         literal = data.decode("utf-8", "replace")
     else:

@@ -44,6 +44,41 @@ def test_the_preview_is_exactly_what_the_launch_runs(login_as, case_root, argv_r
                                 for e in evidence)  # the combined context never becomes evidence
 
 
+def test_a_context_md_changed_after_the_preview_is_refused(login_as, case_root, cstore):
+    c = login_as("admin")
+    folder = _folder(case_root, "Caso Contexto")
+    (folder / "context.md").write_bytes(b"uno\n")
+    body = {"command": "new-open-case", "folder": str(folder), "notes": "nota"}
+    reviewed = c.post("/api/v1/jobs/preview", json=body).json()["original_context"]["sha256"]
+    (folder / "context.md").write_bytes(b"dos\n")  # edited after the operator reviewed it
+    r = c.post("/api/v1/jobs", json={**body, "context_sha256": reviewed})
+    assert r.status_code == 409 and r.json()["error"]["code"] == "context_changed"
+    assert "revísalo" in r.json()["error"]["message"]
+    bare = _folder(case_root, "Caso Sin Contexto")
+    assert c.post("/api/v1/jobs/preview", json={**body, "folder": str(bare)}).json()["original_context"] is None
+    (bare / "context.md").write_bytes(b"nuevo\n")  # appeared after a preview that had none
+    r = c.post("/api/v1/jobs", json={**body, "folder": str(bare), "context_sha256": "none"})
+    assert r.status_code == 409 and r.json()["error"]["code"] == "context_changed"
+    assert cstore.list_jobs() == []
+
+
+def test_an_unchanged_context_md_launches(login_as, case_root, wait_until):
+    c = login_as("admin")
+    folder = _folder(case_root, "Caso Mismo Contexto")
+    (folder / "context.md").write_bytes(b"uno\n")
+    bare = _folder(case_root, "Caso Nunca Contexto")
+    launched = []
+    for target in (folder, bare):
+        body = {"command": "new-open-case", "folder": str(target), "notes": "nota"}
+        preview = c.post("/api/v1/jobs/preview", json=body).json()
+        reviewed = (preview["original_context"] or {}).get("sha256") or "none"
+        r = c.post("/api/v1/jobs", json={**body, "context_sha256": reviewed})
+        assert r.status_code == 202 and r.json()["job"]["context_file"] == preview["context_file"]
+        launched.append(r.json()["job"]["id"])
+    for job_id in launched:
+        wait_until(lambda: _finished(c, job_id), timeout=60, message="job end")
+
+
 def test_events_json_and_sse_agree_and_a_reconnect_resumes(login_as, case_root, wait_until):  # Review Focus 5
     c = login_as("admin")
     folder = str(_folder(case_root, "Caso SSE"))
