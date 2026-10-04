@@ -156,12 +156,16 @@ Leyenda: `[ ]` pendiente · `[~]` en curso · `[x]` hecho · `[!]` bloqueado (ve
 - [x] H1 · Base: `hermes ghostrecon serve|user|token`, login/roles/tokens, API de lectura, verificación de sellos cacheada, descargas contenidas, frontend (Inicio, Casos, Caso con 7 pestañas, Sistema), demo `console_demo.py`
 - [x] H2 · Ejecuciones: navegador de carpetas (`case_roots`), asistente Nueva auditoría con notas de contexto, Re-run/Review desde el caso, motor de jobs desacoplado (límites, cola, cancelación del árbol, huérfanos, supervivencia al reinicio), vista en vivo (SSE), lista de Ejecuciones, Usuarios y tokens en Sistema, migraciones versionadas de `console_*`, UI sin nombres de hito
   - [x] R1 verificado en la máquina dedicada 2026-10-04: la skill completa corre vía -q; el sello requiere oneshot_max_children ≥ validación A/B/C — ver R10 (plan H2, Tarea 12, Step 8)
-- [ ] H3 · Exportación `.zip` verificable, tablas CSV/XLSX, búsqueda entre casos, avisos, verificación de hash al descargar entregables de auditorías selladas (409 `hash_mismatch`, registro de descargas denegadas)
+- [x] H3 · Exportación `.zip` verificable, tablas CSV/XLSX, búsqueda entre casos, avisos, verificación de hash al descargar entregables de auditorías selladas (409 `hash_mismatch`, registro de descargas denegadas)
+  - [x] ZIP en segundo plano (ZIP64, progreso, `EXPORT_MANIFEST.json`, `.sha256`, retención), solo selladas salvo borrador de un admin, nunca la evidencia ni una auditoría con ejecución activa, sello roto o cambiado durante la construcción → bloqueo con el archivo nombrado
+  - [x] tablas CSV (UTF-8 con BOM, sin fórmulas) y XLSX (metadatos Ghost Recon; 503 claro sin openpyxl) con los filtros activos
+  - [x] búsqueda entre casos, filtro «riesgo abierto», «verificado hace X»; avisos del navegador y `hermes send` a `notify_target`
   - Pendientes de la revisión final de H1 que no entraron en H2:
-    - lock en la contabilidad del bloqueo de login
-    - `touch_session` best-effort y cabeceras de seguridad en los 500
-    - prueba E2E real con `HERMES_HOME` temporal + `config.yaml`
-    - purga de sesiones vencidas
+    - [x] lock en la contabilidad del bloqueo de login
+    - [x] `touch_session` best-effort y cabeceras de seguridad en los 500
+    - [x] prueba E2E real con `HERMES_HOME` temporal + `config.yaml`
+    - [x] purga de sesiones vencidas
+  - [x] Seguimientos de la revisión de H2: retención de archivos de ejecuciones, SSE que revalida al usuario, despacho que sobrevive a un runner que no arranca, asistente con vuelta a las carpetas de casos
 - [ ] H4 · Instaladores `--console`/servicio (unidad systemd con `KillMode=process`), `CONSOLE.md`, aceptación en la máquina dedicada
 
 ---
@@ -186,3 +190,4 @@ Leyenda: `[ ]` pendiente · `[~]` en curso · `[x]` hecho · `[!]` bloqueado (ve
 - 2026-10-02 · v1.2 · Revisión de código independiente (sub-agente) y correcciones: `open_case` ya no sobreescribe hashes auditados ni convierte lo nuevo en DUP_PRIOR antes de un rerun; evidencia MODIFIED entra al enjambre del rerun y conserva el hash anterior en `meta.previous_hashes`; ZIP cifrados/archivos ilegibles se registran como UNREADABLE sin abortar el intake; workbook limpia caracteres de control y trata todo texto que empieza por `=` como texto; `secret()` no cae al env de otro perfil; `max_parallel` acotado por `delegation.max_concurrent_children`; `gr_swarm_plan(mode=review)` devuelve `delegate_tasks`; `Store` serializado con RLock; instalador compatible con bash 3.2 y con el comando real `hermes skills opt-in --sync`. 55 tests + smoke verdes.
 - 2026-10-02 · v1.3 · Fase 8 (consola web) diseñada y H1 implementado: servidor propio en loopback (túnel), login con roles admin/viewer y tokens Bearer, API `/api/v1` de solo lectura sobre la BD de casos, caché de verificación de sellos, descargas contenidas en la carpeta de cada auditoría, frontend sin build. Sin cambios al core de Hermes.
 - 2026-10-03 · v1.4 · H2 de la consola implementado: navegador de carpetas limitado a `case_roots`, asistente «+ Nueva auditoría» y Re-run/Review con notas del operador (contexto combinado en `_console/`, nunca en la evidencia), orden exacta en la vista previa, un `job_runner` desacoplado por ejecución (límites, cola, cancelación del árbol con psutil, huérfanos, supervivencia al reinicio), vista en vivo por SSE, Usuarios y tokens en Sistema, migraciones versionadas. E2E con agente falso y servidor real. Sin cambios al core de Hermes.
+- 2026-10-04 · v1.5 · H3 de la consola implementado: exportación `.zip` verificable de un caso o una auditoría (manifiesto con SHA-256 por archivo, `.sha256`, solo selladas salvo borrador de un admin, sin evidencia ni enlaces, sellos verificados antes y durante el empaquetado), tablas CSV/XLSX con los filtros activos, búsqueda entre casos, filtro «riesgo abierto», avisos del navegador y `hermes send`, descarga de entregables comprobada contra el sello, esquema v3 de `console_*` y los pendientes de H1/H2 (bloqueo con candado, 500 con cabeceras, purga de sesiones, E2E en un `HERMES_HOME` real). Sin cambios al core de Hermes.
