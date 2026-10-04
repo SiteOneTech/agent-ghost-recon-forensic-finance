@@ -81,10 +81,16 @@ def _recent_first(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return sorted(rows, key=lambda r: r["last_activity"] or "", reverse=True)
 
 
-def list_cases(store: Store, cstore: ConsoleStore, *, q: str = "", status: str = "") -> List[Dict[str, Any]]:
+def list_cases(store: Store, cstore: ConsoleStore, *, q: str = "", status: str = "",
+               risk: str = "") -> List[Dict[str, Any]]:
+    """``risk``: cases with open findings of that risk; ``any``: with any open finding (spec §10.3 "riesgo abierto")."""
     rows = [case_row(store, cstore, c) for c in store.list_cases()]
     if status:
         rows = [r for r in rows if r["status"] == status]
+    if risk == "any":
+        rows = [r for r in rows if r["open_total"] > 0]
+    elif risk:
+        rows = [r for r in rows if r["open_by_risk"].get(risk, 0) > 0]
     needle = q.strip().lower()
     if needle:
         rows = [r for r in rows if any(needle in r[k].lower() for k in ("name", "id", "root_path"))]

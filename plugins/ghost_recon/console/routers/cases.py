@@ -20,9 +20,11 @@ def get_case_or_404(ctx: ConsoleContext, case_id: str) -> dict:
 
 
 @router.get("/cases")
-def list_cases(q: str = "", status: str = "", _: Principal = Depends(require("viewer")),
+def list_cases(q: str = "", status: str = "", risk: str = "", _: Principal = Depends(require("viewer")),
                ctx: ConsoleContext = Depends(get_ctx)):
-    return {"items": readmodel.list_cases(ctx.store, ctx.cstore, q=q, status=status)}
+    if risk not in ("", "any", *readmodel.RISKS):
+        raise ApiError(422, "invalid_argument", f"riesgo desconocido: {risk} (any, {', '.join(readmodel.RISKS)})")
+    return {"items": readmodel.list_cases(ctx.store, ctx.cstore, q=q, status=status, risk=risk)}
 
 
 @router.get("/cases/{case_id}")

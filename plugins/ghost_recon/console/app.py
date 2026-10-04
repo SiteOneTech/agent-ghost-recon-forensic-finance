@@ -23,7 +23,7 @@ from .exports import ExportService
 from .housekeeping import Housekeeping
 from .jobs import JobService
 from .routers import (audits as audits_routes, auth as auth_routes, cases as cases_routes, exports as exports_routes,
-                      fs as fs_routes, jobs as jobs_routes, system as system_routes, users as users_routes)
+                      fs as fs_routes, jobs as jobs_routes, search as search_routes, system as system_routes, users as users_routes)
 from .settings import ConsoleSettings
 from .store import ConsoleStore
 
@@ -42,7 +42,7 @@ SECURITY_HEADERS = {
     "Cross-Origin-Opener-Policy": "same-origin",
 }
 ROUTERS = (auth_routes, system_routes, cases_routes, audits_routes, fs_routes, jobs_routes, users_routes,
-           exports_routes)
+           exports_routes, search_routes)
 INTERNAL_ERROR = {"error": {"code": "internal",
                             "message": "error interno de la consola; el detalle quedó en el log del servidor"}}
 logger = logging.getLogger(__name__)
