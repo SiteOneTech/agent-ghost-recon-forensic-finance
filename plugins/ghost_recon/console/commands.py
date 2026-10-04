@@ -15,6 +15,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 from ..core import casefolder as cf
 from ..core.db import Store
 from . import fsjail
+from .paths import resolve_within
 
 SOURCE_TAG = "ghost-recon-console"
 MAX_NAME = 120
@@ -97,6 +98,28 @@ def _jail(raw: str, roots: Sequence[Path], label: str) -> Path:
     return path
 
 
+def _out_folder(order: Order, req: LaunchRequest, roots: Sequence[Path], folder: Path) -> Optional[Path]:
+    """``--out``: inside the roots and never the evidence folder or a folder inside it (spec §7)."""
+    if not (order.out and req.out.strip()):
+        return None
+    out = _jail(req.out, roots, "carpeta de salida")
+    if resolve_within(out, [folder]) is not None:
+        raise CommandError(422, "out_in_evidence",
+                           "carpeta de salida: no puede ser la carpeta de evidencia ni una carpeta dentro de ella")
+    return out
+
+
+def _results_root(results_root: Path, roots: Sequence[Path]) -> Path:
+    """Where the combined context is written and whose path reaches ``-q``: it must be safe text and resolve inside
+    ``case_roots`` (the case folder lies inside them too), whatever the case record says."""
+    _safe("carpeta de resultados del caso", str(results_root))
+    if resolve_within(results_root, roots, strict=False) is None:
+        raise CommandError(409, "results_outside_roots",
+                           f"La carpeta de resultados del caso ({results_root}) está fuera de las carpetas de casos "
+                           "(case_roots): la consola no escribe allí. Lanza esta orden desde la terminal.")
+    return results_root
+
+
 def _options(order: Order, req: LaunchRequest) -> Dict[str, str]:
     if not order.options:
         return {}
@@ -152,7 +175,7 @@ def plan(req: LaunchRequest, *, store: Store, roots: Sequence[Path], audits_dirn
         raise CommandError(409, "no_case_roots", NO_ROOTS_MESSAGE)
     folder = _jail(req.folder, roots, "carpeta")
     opts = _options(order, req)
-    out = _jail(req.out, roots, "carpeta de salida") if order.out and req.out.strip() else None
+    out = _out_folder(order, req, roots, folder)
     case = fsjail.existing_case(store, folder, audits_dirname)
     check, code, message = _REQUIREMENTS[order.requires]
     if not check(case):
@@ -160,7 +183,8 @@ def plan(req: LaunchRequest, *, store: Store, roots: Sequence[Path], audits_dirn
     notes = req.notes.strip()
     if len(notes) > MAX_NOTES:
         raise CommandError(422, "invalid_argument", f"las notas admiten como máximo {MAX_NOTES} caracteres")
-    results_root = out or (Path(case["results_root"]) if case else cf.audits_root(folder, audits_dirname))
+    case_results = Path(case["results_root"]) if case else cf.audits_root(folder, audits_dirname)
+    results_root = _results_root(out or case_results, roots)
     found = fsjail.context_info(folder, roots)
     original = {k: found[k] for k in ("path", "sha256", "size")} if found else None
     if notes:
@@ -168,7 +192,7 @@ def plan(req: LaunchRequest, *, store: Store, roots: Sequence[Path], audits_dirn
                                                                      username))
     else:
         context_file = original["path"] if original and order.context_arg else ""
-    query = build_query(order, folder, context_file, opts, out)
+    query = build_query(order, folder, _safe("archivo de contexto", context_file), opts, out)
     return {"command": order.command, "skill": order.skill, "folder": str(folder), "out": str(out) if out else "",
             "case": case, "results_root": str(results_root), "original_context": original, "notes": notes,
             "context_file": context_file, "query": query,

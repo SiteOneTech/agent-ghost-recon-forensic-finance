@@ -160,7 +160,8 @@ def count_files(folder: Path, skip: Sequence[str] = (), cap: int = COUNT_CAP, ro
 
 def existing_case(store: Store, folder: Path, audits_dirname: str) -> Optional[Dict[str, Any]]:
     """The case anchored to ``folder``: from the DB, else from its ``case.json`` mirror (a case opened elsewhere);
-    None when the folder is not a case yet."""
+    None when the folder is not a case yet. The mirror is folder content, not DB state, so its ``out_dir`` is ignored:
+    a mirror-only case always gets the default results folder."""
     case = store.get_case(str(folder))
     if case:
         audits = store.list_audits(case["id"])
@@ -174,11 +175,10 @@ def existing_case(store: Store, folder: Path, audits_dirname: str) -> Optional[D
     if not info:
         return None
     audits = [a for a in mirror.get("audits") or [] if isinstance(a, dict)]
-    meta = info.get("meta") if isinstance(info.get("meta"), dict) else {}
     return {"id": info.get("id"), "name": info.get("name") or folder.name, "source": "case.json",
             "audits": len(audits), "sealed": sum(1 for a in audits if a.get("status") == "sealed"),
             "last_status": audits[-1].get("status") if audits else None,
-            "results_root": str(cf.audits_root(folder, audits_dirname, meta.get("out_dir"))),
+            "results_root": str(cf.audits_root(folder, audits_dirname)),
             "base_currency": info.get("base_currency"), "language": info.get("language")}
 
 

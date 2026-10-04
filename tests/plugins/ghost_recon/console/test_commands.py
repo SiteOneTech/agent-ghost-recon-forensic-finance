@@ -2,7 +2,9 @@
 operator's notes become a combined context file beside the results (never among the evidence), and the copyable
 command round-trips through the target shell."""
 import hashlib
+import json
 import shlex
+from pathlib import Path
 
 import pytest
 
@@ -135,6 +137,36 @@ def test_a_context_md_changed_after_the_preview_is_refused(plan_for, fresh):
     with pytest.raises(CommandError) as err:
         write_combined_context(p, "jean", "2026-10-03T10:00:00Z")
     assert (err.value.status, err.value.code) == (409, "context_changed")
+
+
+def test_a_mirror_only_case_never_takes_its_results_root_from_case_json(plan_for, fresh, gr_env):
+    """case.json is folder content, not DB state: its ``out_dir`` must not decide where the console writes or what
+    reaches the ``-q`` text."""
+    hostile = str(gr_env / "elsewhere" / 'inj"ected')
+    mirror = {"case": {"id": "GRC-espejo", "name": "Espejo", "meta": {"out_dir": hostile}}, "audits": []}
+    (fresh / AUDITS).mkdir()
+    (fresh / AUDITS / "case.json").write_text(json.dumps(mirror), encoding="utf-8")
+    p = plan_for("rerun-case", fresh, notes="nota")
+    assert p["case"]["source"] == "case.json"
+    assert p["results_root"] == str(fresh.resolve() / AUDITS)
+    assert Path(p["context_file"]).parent == fresh.resolve() / AUDITS / CONSOLE_DIR
+    assert p["query"].count('"') % 2 == 0 and hostile not in p["query"]
+
+
+def test_out_is_quoted_becomes_the_results_root_and_is_never_the_evidence(plan_for, fresh, case_root, gr_env):
+    out = case_root / "Salidas Logística ñ"
+    out.mkdir()
+    p = plan_for("new-open-case", fresh, out=str(out), notes="nota")
+    assert f'--out "{out.resolve()}"' in p["query"] and p["results_root"] == str(out.resolve())
+    assert Path(p["context_file"]).parent == out.resolve() / CONSOLE_DIR
+    (gr_env / "fuera").mkdir()
+    with pytest.raises(CommandError) as err:
+        plan_for("new-open-case", fresh, out=str(gr_env / "fuera"))
+    assert (err.value.status, err.value.code) == (403, "outside_roots")
+    for inside in (fresh, fresh / "Bancos"):
+        with pytest.raises(CommandError) as err:
+            plan_for("new-open-case", fresh, out=str(inside))
+        assert (err.value.status, err.value.code) == (422, "out_in_evidence") and "evidencia" in err.value.message
 
 
 def test_review_notes_travel_on_a_second_line(plan_for, seeded):

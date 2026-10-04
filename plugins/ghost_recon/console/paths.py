@@ -14,11 +14,12 @@ def case_results_root(case: dict) -> Path:
     return cf.audits_root(Path(case["root_path"]), case["audits_dir"], (case.get("meta") or {}).get("out_dir"))
 
 
-def resolve_within(candidate, roots: Iterable) -> Optional[Path]:
+def resolve_within(candidate, roots: Iterable, *, strict: bool = True) -> Optional[Path]:
     """``candidate`` resolved (symlinks followed) when it lies inside one of ``roots``; otherwise None.
-    Missing paths, other drives and anything that escapes a root all return None. Case-insensitive on Windows."""
+    Missing paths, other drives and anything that escapes a root all return None. Case-insensitive on Windows.
+    ``strict=False`` accepts a path that does not exist yet (a folder about to be created), resolving what exists."""
     try:
-        path = Path(candidate).resolve(strict=True)
+        path = Path(candidate).resolve(strict=strict)
     except (OSError, RuntimeError, ValueError):
         return None
     target = os.path.normcase(str(path))

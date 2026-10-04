@@ -118,6 +118,29 @@ def test_a_job_outlives_the_service_that_launched_it(make_jobs, case_root, cstor
     second.stop()
 
 
+def _db_case(store, folder, out_dir):
+    return store.create_case(id=f"GRC-{folder.name.replace(' ', '-')}", slug=folder.name.lower().replace(" ", "-"),
+                             name=folder.name, root_path=str(folder.resolve()), audits_dir="GhostRecon_Audits",
+                             meta={"out_dir": out_dir})
+
+
+def test_a_case_results_root_that_is_unsafe_or_outside_the_roots_is_refused(make_jobs, case_root, gr_env, store,
+                                                                            cstore):
+    jobs = make_jobs(runner=sleeper)
+    quoted = _folder(case_root, "Caso Comillas")
+    _db_case(store, quoted, str(case_root / "Salidas" / 'inj"ected'))
+    with pytest.raises(CommandError) as err:
+        jobs.launch(LaunchRequest("rerun-case", str(quoted), notes="nota"), ADMIN)
+    assert (err.value.status, err.value.code) == (422, "invalid_argument") and "comillas" in err.value.message
+    outside = _folder(case_root, "Caso Fuera")
+    _db_case(store, outside, str(gr_env / "elsewhere" / "salidas"))
+    with pytest.raises(CommandError) as err:
+        jobs.launch(LaunchRequest("rerun-case", str(outside), notes="nota"), ADMIN)
+    assert (err.value.status, err.value.code) == (409, "results_outside_roots") and "case_roots" in err.value.message
+    assert not (case_root / "Salidas").exists() and not (gr_env / "elsewhere").exists()  # nothing written
+    assert cstore.list_jobs() == []
+
+
 def test_a_runner_that_cannot_start_fails_the_job(make_jobs, case_root, cstore, tmp_path):
     jobs = make_jobs(runner=lambda job_id: [str(tmp_path / "no-such-runner")])
     job = jobs.launch(LaunchRequest("new-open-case", str(_folder(case_root, "Caso Roto"))), ADMIN)
