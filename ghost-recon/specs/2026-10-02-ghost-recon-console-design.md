@@ -183,6 +183,7 @@ running ──(runner muerto sin estado final)──▶ orphaned
 3. El **`job_runner`** es un proceso desacoplado, uno por job. Su trabajo:
    - el servidor registra `runner_pid` y su create time al lanzarlo; el runner confirma `running` (si encuentra la fila cancelada, sale sin lanzar el agente) y ejecuta el argv guardado en la fila, sin reconstruirlo. El runner solo es dueño del job si `runner_pid` es su propio pid o el de su padre (un salto de lanzador, p. ej. el redirector del venv en Windows);
    - lanza el agente con stdout hacia `jobs/<id>.jsonl` y stderr hacia `jobs/<id>.log` (bajo `plugin_data_dir/ghost-recon/console/jobs/`);
+   - el directorio de trabajo del agente es `jobs/<id>/`, vacío y propio de la ejecución, nunca la carpeta de evidencia ni la de resultados: Hermes carga `AGENTS.md`/`CLAUDE.md`/`.cursorrules` del directorio de trabajo como instrucciones y resuelve allí las rutas relativas, así que un archivo dejado entre la evidencia nunca manda sobre el agente y una escritura relativa nunca toca la evidencia (la carpeta viaja en el `-q`);
    - lee el `session_id` del evento `system/init`;
    - mientras corre, actualiza `phase` en la BD a partir de los eventos (§6.3);
    - al terminar escribe `exit_code`, `result_text`, `tokens` y `error`, y el estado `succeeded` o `failed`;

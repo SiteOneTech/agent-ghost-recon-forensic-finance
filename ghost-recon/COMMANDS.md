@@ -67,13 +67,14 @@ hermes ghostrecon token list | token revoke <id>
 - **Ejecuciones desde la consola** («+ Nueva auditoría» y, en la página del caso, «▶ Re-run» y «▶ Review»):
   - el navegador de carpetas solo ve las carpetas de `case_roots`; la evidencia se copia antes a una de ellas (RustDesk/SFTP). La consola no sube archivos. El jail también contiene las uniones NTFS (junctions) y los archivos que son enlaces simbólicos: nada que apunte fuera de `case_roots` se lista, cuenta, mide ni busca;
   - cada ejecución corre `<hermes> -p <perfil> --cli --accept-hooks --skills <orden> chat -q "/<orden> …" --format stream-json --source ghost-recon-console` en su propio proceso (`job_runner`), así que sobrevive a cerrar el navegador y a reiniciar la consola. La vista previa muestra exactamente esa orden;
+  - el agente arranca en un directorio de trabajo propio de cada ejecución (`console/jobs/<id>/`), nunca en la carpeta de evidencia: un `AGENTS.md`, `CLAUDE.md` o `.cursorrules` dejado entre la evidencia nunca se convierte en instrucciones y una escritura con ruta relativa nunca toca la evidencia (la carpeta del caso viaja en el `-q`);
   - el runner solo es dueño de una ejecución cuando el `runner_pid` de la fila es el suyo o el de su proceso padre (un único salto de lanzador: el redirector del venv en Windows); el servidor graba el PID que lanzó;
   - las «Notas adicionales» se guardan en `<carpeta de resultados>/_console/context_<hash>.md`, con el `context.md` original literal y su SHA-256; el agente las registra como criterio del operador (`CRIT-nn`), nunca como hecho. El `context.md` original no se toca;
   - límites: una ejecución activa por carpeta o caso y `max_parallel_jobs` en total (por defecto 2); lo demás queda en cola y arranca solo;
   - «Cancelar» detiene el agente y todo lo que lanzó; la auditoría a medio hacer queda abierta, sin sellar, y el siguiente Re-run la continúa. Una ejecución cuyo proceso desaparece sin cerrar queda «interrumpida» (huérfana) y su agente se detiene;
   - la vista en vivo (SSE) lee la fila de la ejecución antes que los eventos y termina solo cuando una fila ya terminal va seguida de una lectura vacía, así que no se pierde ningún evento final;
   - «Continuar en terminal» copia `hermes -p <perfil> --resume <session_id>`; con `dashboard_url`, «Continuar en chat» abre la sesión en el dashboard;
-  - archivos de cada ejecución en `<plugin-data>/ghost-recon/console/jobs/`: `<id>.jsonl` (salida del agente), `<id>.log` (errores del agente), `<id>.events.jsonl` (actividad) y `<id>.runner.log`.
+  - archivos de cada ejecución en `<plugin-data>/ghost-recon/console/jobs/`: `<id>.jsonl` (salida del agente), `<id>.log` (errores del agente), `<id>.events.jsonl` (actividad), `<id>.runner.log` y `<id>/` (directorio de trabajo del agente).
 - API: `/api/v1/…`; el esquema está en `/api/v1/openapi.json`, tras el login.
 - Configuración: `plugins.entries.ghost-recon.settings.console` en `config.yaml` (la consola no la edita):
 

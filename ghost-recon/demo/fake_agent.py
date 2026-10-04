@@ -4,15 +4,17 @@
     python ghost-recon/demo/fake_agent.py --fake-config cfg.json <the Hermes arguments the console built>
 
 Emits the real record shapes of ``hermes_cli/stream_json.py`` (system/init, tool_use, tool_result, text, result),
-sleeping between steps, and exits with the configured code. The console runs the agent with the case folder as its
-working directory, so the config holds a ``default`` behaviour plus overrides keyed by folder name:
+sleeping between steps, and exits with the configured code. Like the real skills, it takes the case folder from the
+``-q`` text (the first quoted argument after ``/<order>``), never from its working directory: the console starts the
+agent in a per-job working directory. The config holds a ``default`` behaviour plus overrides keyed by folder name:
 
     {"default": {"steps": 3, "delay": 0.05}, "folders": {"hang-case": {"hang": true}}}
 
 Keys: ``steps`` (delegated blocks), ``delay`` (seconds per step), ``exit_code``, ``error`` (in the result record),
 ``hang`` (spawn a sleeping grandchild and wait to be killed), ``no_result`` (exit without the result record),
-``open_case`` (really open the case in the Ghost Recon DB on /new-open-case; default true) and ``record_argv`` (path
-where the full argv is written as JSON).
+``open_case`` (really open the case in the Ghost Recon DB on /new-open-case; default true), ``record_argv`` (path
+where the full argv is written as JSON), ``record_cwd`` (path where the working directory is written) and
+``write_relative`` (a file name written with a RELATIVE path, as a careless tool call would).
 """
 
 from __future__ import annotations
@@ -20,6 +22,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -27,6 +30,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 TOOL_OUTPUT_CAP = 5000  # the same cap as hermes_cli/stream_json.py
+_FOLDER_RE = re.compile(r'^/\S+\s+"([^"]+)"')
 
 
 def emit(record: dict) -> None:
@@ -62,10 +66,18 @@ def main() -> int:
     parser.add_argument("--fake-config", default="")
     parser.add_argument("-q", "--query", default="")
     args, _hermes_flags = parser.parse_known_args()
-    folder = Path.cwd()
+    match = _FOLDER_RE.match(args.query)
+    if not match:
+        print(f"fake agent: no case folder in -q: {args.query!r}", file=sys.stderr)
+        return 2
+    folder = Path(match.group(1))
     cfg = behaviour(args.fake_config, folder.name)
     if cfg.get("record_argv"):
         Path(cfg["record_argv"]).write_text(json.dumps(sys.argv, ensure_ascii=False), encoding="utf-8")
+    if cfg.get("record_cwd"):
+        Path(cfg["record_cwd"]).write_text(os.getcwd(), encoding="utf-8")
+    if cfg.get("write_relative"):
+        Path(cfg["write_relative"]).write_text("escrito con una ruta relativa\n", encoding="utf-8")
     session = f"fake-{os.getpid()}"
     emit({"type": "system", "subtype": "init", "model": "fake/agent", "session_id": session})
     if cfg.get("hang"):

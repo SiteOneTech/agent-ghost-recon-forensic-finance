@@ -1,10 +1,11 @@
 """Detached job runner: one process per console job (``python -m plugins.ghost_recon.console.job_runner <id>``).
 
-It runs the agent argv stored in ``console_jobs`` — exactly what the preview showed — with stdout → ``<id>.jsonl`` and
-stderr → ``<id>.log``, normalizes the stream into ``<id>.events.jsonl``, keeps ``phase``/``session_id``/``case_id``
-current and writes the final state. The console server is never its required parent: the job survives a server
-restart and the new server finds it in the DB. Every write is conditional on the row still being ``running``, so a
-cancel (or an orphan verdict) always wins; the runner then stops the agent and exits.
+It runs the agent argv stored in ``console_jobs`` — exactly what the preview showed — from its own empty working
+directory ``<id>/`` (never the evidence folder), with stdout → ``<id>.jsonl`` and stderr → ``<id>.log``, normalizes
+the stream into ``<id>.events.jsonl``, keeps ``phase``/``session_id``/``case_id`` current and writes the final state.
+The console server is never its required parent: the job survives a server restart and the new server finds it in the
+DB. Every write is conditional on the row still being ``running``, so a cancel (or an orphan verdict) always wins; the
+runner then stops the agent and exits.
 """
 
 from __future__ import annotations
@@ -47,6 +48,7 @@ class Runner:
         self.raw = jobfiles.raw_path(base, job_id)
         self.log = jobfiles.log_path(base, job_id)
         self.events = jobfiles.events_path(base, job_id)
+        self.work = jobfiles.work_dir(base, job_id)
         self.norm = events.Normalizer()
         self.offset = 0
         self.reported: Dict[str, Any] = {}
@@ -77,9 +79,11 @@ class Runner:
             return self._status()
         self.reported = {k: job.get(k) for k in ("case_id", "phase", "session_id")}
         try:
+            # Never the evidence folder: Hermes reads instructions from its cwd and writes relative paths there.
+            self.work.mkdir(parents=True, exist_ok=True)
             with open(self.raw, "ab") as out, open(self.log, "ab") as err:
                 agent = subprocess.Popen(job["argv"], stdout=out, stderr=err, stdin=subprocess.DEVNULL,
-                                         cwd=job["folder"], env=procs.child_env())
+                                         cwd=self.work, env=procs.child_env())
         except OSError as exc:
             self._finish(job, {"status": "failed", "exit_code": None, "error": f"no se pudo iniciar el agente: {exc}"})
             return self._status()

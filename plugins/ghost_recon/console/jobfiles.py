@@ -1,6 +1,7 @@
 """Per-job files under ``<plugin data>/console/jobs/`` (the folder that holds ``ghostrecon.db``):
 ``<id>.jsonl`` (agent stdout, stream-json), ``<id>.log`` (agent stderr), ``<id>.events.jsonl`` (normalized console
-events, written by the runner) and ``<id>.runner.log`` (the runner's own stderr). Byte offsets make reads incremental."""
+events, written by the runner), ``<id>.runner.log`` (the runner's own stderr) and ``<id>/``, the agent's working
+directory. Byte offsets make reads incremental."""
 
 from __future__ import annotations
 
@@ -30,6 +31,14 @@ def events_path(base: Path, job_id: int) -> Path:
 
 def runner_log_path(base: Path, job_id: int) -> Path:
     return Path(base) / f"{int(job_id)}.runner.log"
+
+
+def work_dir(base: Path, job_id: int) -> Path:
+    """The agent's working directory: empty and owned by the console, never the evidence or the results folder. Hermes
+    reads AGENTS.md/CLAUDE.md/.cursorrules from its cwd as instructions and its terminal tool resolves relative paths
+    there, so a file planted in an evidence folder never becomes an instruction and a relative write never touches
+    the evidence (the case folder travels in ``-q``)."""
+    return Path(base) / str(int(job_id))
 
 
 def read_lines(path: Path, offset: int = 0, *, final: bool = False) -> Tuple[List[str], int]:

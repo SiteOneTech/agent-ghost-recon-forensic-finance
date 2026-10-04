@@ -5,6 +5,7 @@ import os
 import subprocess
 import sys
 import threading
+from pathlib import Path
 
 import pytest
 
@@ -12,6 +13,7 @@ from plugins.ghost_recon.console import job_runner, jobfiles, procs
 from plugins.ghost_recon.console.commands import agent_args
 from plugins.ghost_recon.console.events import Normalizer
 from plugins.ghost_recon.console.job_runner import SELF_CHECK, Runner
+from plugins.ghost_recon.console.paths import resolve_within
 from plugins.ghost_recon.console.procs import RUNNER_MODULE
 from plugins.ghost_recon.console.store import ACTIVE_STATUSES
 
@@ -74,6 +76,28 @@ def test_the_runner_executes_exactly_the_stored_argv(cstore, store, evidence, fa
     job = _job(cstore, evidence, fake_agent({"record_argv": str(record)}))
     _run(cstore, store, job["id"])
     assert json.loads(record.read_text(encoding="utf-8")) == cstore.get_job(job["id"])["argv"][1:]
+
+
+def _files(folder):
+    return sorted(str(p.relative_to(folder)) for p in folder.rglob("*"))
+
+
+def test_the_agent_runs_in_a_per_job_work_dir_never_in_the_evidence(cstore, store, evidence, case_root, fake_agent,
+                                                                    tmp_path):
+    """Hermes loads AGENTS.md/CLAUDE.md/.cursorrules from its cwd as instructions and the terminal tool writes relative
+    paths there: a file planted in an evidence folder must never steer the agent, and a relative write must never
+    land among the evidence."""
+    record = tmp_path / "cwd.txt"
+    before = _files(evidence)
+    job = _job(cstore, evidence, fake_agent({"record_cwd": str(record), "write_relative": "nota-relativa.txt",
+                                             "open_case": False}))
+    assert _run(cstore, store, job["id"]) == "succeeded"
+    cwd = Path(record.read_text(encoding="utf-8")).resolve()
+    work = jobfiles.work_dir(jobfiles.jobs_dir(), job["id"]).resolve()
+    assert cwd == work and cwd != evidence.resolve()
+    assert resolve_within(cwd, [case_root]) is None  # not inside any case root
+    assert (work / "nota-relativa.txt").is_file()
+    assert _files(evidence) == before  # the evidence tree is never written to
 
 
 def test_a_job_cancelled_before_it_starts_never_launches_the_agent(cstore, store, evidence, fake_agent):
