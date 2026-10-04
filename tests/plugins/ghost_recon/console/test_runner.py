@@ -213,7 +213,8 @@ def test_identity_guards_against_recycled_pids():
 
 
 def _hanging_tree(cstore, folder, fake_agent, wait_until):
-    """A detached runner whose fake agent spawned a sleeping grandchild; returns (runner Popen, agent, grandchild)."""
+    """A detached runner whose fake agent spawned a sleeping grandchild; returns the runner Popen and the
+    (pid, identity) of the runner, the agent and the grandchild, fingerprinted while they run."""
     job = _job(cstore, folder, fake_agent({"hang": True}))
     runner = procs.spawn_detached([sys.executable, "-m", RUNNER_MODULE, str(job["id"]), "--poll", "0.05"],
                                   cwd=procs.hermes_root(), env=procs.child_env())
@@ -226,24 +227,25 @@ def _hanging_tree(cstore, folder, fake_agent, wait_until):
 
     pid = wait_until(grandchild, message="the fake agent's grandchild")
     agent = wait_until(lambda: _with_agent(cstore, job["id"]), message="agent pid")["pid"]
-    return runner, agent, pid
+    tree = [(p, procs.identity(p)) for p in (runner.pid, agent, pid)]
+    assert all(started is not None for _, started in tree)
+    return runner, tree
 
 
-def _kill_and_check(runner, agent, grandchild, wait_until):
+def _kill_and_check(runner, tree, wait_until):
     assert procs.kill_tree(runner.pid, procs.identity(runner.pid))
-    wait_until(lambda: not any(procs.alive(p, None) for p in (runner.pid, agent, grandchild)),
-               message="the whole tree gone")
+    wait_until(lambda: not any(procs.alive(p, started) for p, started in tree), message="the whole tree gone")
     runner.wait(timeout=30)
 
 
 @pytest.mark.platforms("posix")
 def test_the_detached_runner_leads_its_session_and_dies_with_its_tree_posix(cstore, evidence, fake_agent, wait_until):
-    runner, agent, grandchild = _hanging_tree(cstore, evidence, fake_agent, wait_until)
+    runner, tree = _hanging_tree(cstore, evidence, fake_agent, wait_until)
     assert os.getsid(runner.pid) == runner.pid  # start_new_session: a server restart cannot signal it
-    _kill_and_check(runner, agent, grandchild, wait_until)
+    _kill_and_check(runner, tree, wait_until)
 
 
 @pytest.mark.platforms("windows")
 def test_the_detached_runner_dies_with_its_tree_windows(cstore, evidence, fake_agent, wait_until):
-    runner, agent, grandchild = _hanging_tree(cstore, evidence, fake_agent, wait_until)
-    _kill_and_check(runner, agent, grandchild, wait_until)
+    runner, tree = _hanging_tree(cstore, evidence, fake_agent, wait_until)
+    _kill_and_check(runner, tree, wait_until)

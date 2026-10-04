@@ -24,6 +24,7 @@ from .store import ACTIVE_STATUSES, ConsoleStore
 
 RESULT_TEXT_MAX = 20_000
 SELF_CHECK = "ghost-recon job runner ok"
+NO_IDENTITY_ERROR = "no se pudo verificar el proceso del agente al iniciarlo (PID y hora de inicio)"
 
 
 def final_state(returncode: int, result: Optional[Dict[str, Any]], stderr_tail: str) -> Dict[str, Any]:
@@ -88,17 +89,25 @@ class Runner:
             self._finish(job, {"status": "failed", "exit_code": None, "error": f"no se pudo iniciar el agente: {exc}"})
             return self._status()
         started = procs.identity(agent.pid)
+        if started is None:  # one retry; an agent that cannot be fingerprinted could never be stopped safely
+            time.sleep(0.1)
+            started = procs.identity(agent.pid)
+        if started is None:
+            agent.kill()  # still our unreaped child, so its PID cannot have been recycled
+            agent.wait(timeout=30)
+            self._finish(job, {"status": "failed", "exit_code": agent.returncode, "error": NO_IDENTITY_ERROR})
+            return self._status()
         try:
             self.cstore.update_job(self.job_id, expect=("running",), pid=agent.pid, pid_started=started)
-            return self._supervise(job, agent)
+            return self._supervise(job, agent, started)
         except BaseException as exc:
             self._abort(job, agent, started, exc)
             raise
 
-    def _supervise(self, job: Dict[str, Any], agent: subprocess.Popen) -> str:
+    def _supervise(self, job: Dict[str, Any], agent: subprocess.Popen, started: float) -> str:
         while agent.poll() is None:
             if not self._pump(job, final=False):
-                procs.kill_tree(agent.pid, None)
+                procs.kill_tree(agent.pid, started)
                 agent.wait(timeout=30)
                 return self._status()
             time.sleep(self.poll)

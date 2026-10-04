@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 import subprocess
 import threading
+import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
@@ -26,6 +27,7 @@ from .store import ACTIVE_STATUSES, ConsoleStore
 
 logger = logging.getLogger(__name__)
 ORPHAN_ERROR = "el proceso de la ejecución terminó sin registrar su estado final"
+NO_IDENTITY_ERROR = "no se pudo verificar el proceso de la ejecución al iniciarla (PID y hora de inicio)"
 
 
 class JobService:
@@ -206,12 +208,21 @@ class JobService:
             return False
         finally:
             log.close()
+        self._children[job["id"]] = proc  # reaped by _reap whatever happens next
+        started = procs.identity(proc.pid)
+        if started is None:  # one retry; a runner that cannot be fingerprinted never runs unidentified
+            time.sleep(0.1)
+            started = procs.identity(proc.pid)
+        if started is None:
+            # The runner obeys the row: finding it failed, it exits without starting (or stops) its agent.
+            self.cstore.update_job(job["id"], expect=ACTIVE_STATUSES, status="failed", finished_at=utcnow(),
+                                   error=NO_IDENTITY_ERROR)
+            return False
         # The runner may already have marked the row running; a cancel in between leaves it cancelled.
         if not self.cstore.update_job(job["id"], expect=ACTIVE_STATUSES, status="running", runner_pid=proc.pid,
-                                      runner_started=procs.identity(proc.pid), started_at=utcnow()):
-            procs.kill_tree(proc.pid, None)
+                                      runner_started=started, started_at=utcnow()):
+            procs.kill_tree(proc.pid, started)
             return False
-        self._children[job["id"]] = proc
         return True
 
     def _case_id(self, job: Dict[str, Any]) -> Optional[str]:

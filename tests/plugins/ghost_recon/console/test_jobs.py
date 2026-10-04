@@ -1,5 +1,6 @@
 """JobService: preview = launched argv, one active job per folder or case plus a global limit, queue, cancel,
 orphans (also while the server is the runner's parent) and a job that outlives the service that launched it."""
+import subprocess
 import sys
 from dataclasses import replace
 from pathlib import Path
@@ -103,6 +104,27 @@ def test_a_runner_killed_while_the_server_is_its_parent_is_orphaned(make_jobs, c
     final = cstore.get_job(job["id"])
     assert final["status"] == "orphaned" and final["error"]
     wait_until(lambda: not procs.alive(row["pid"], row["pid_started"]), message="the agent left behind is stopped")
+
+
+def test_a_runner_without_a_known_start_time_is_never_taken_for_alive(make_jobs, case_root, cstore, monkeypatch):
+    jobs = make_jobs(runner=lambda job_id: [sys.executable, "-c", "pass"])
+    job = cstore.create_job(command="new-open-case", folder=str(_folder(case_root, "Caso Sin Huella")), args={},
+                            argv=["x"], launched_by="jean")
+    unrelated = subprocess.Popen(sleeper(0))
+    try:
+        # A live PID that is not this job's runner: without a start time, nothing proves it is the runner.
+        assert cstore.update_job(job["id"], status="running", runner_pid=unrelated.pid, runner_started=None)
+        assert not procs.alive(unrelated.pid, None)
+        assert jobs.reconcile() == [job["id"]] and cstore.get_job(job["id"])["status"] == "orphaned"
+        assert unrelated.poll() is None  # and nothing signalled it
+    finally:
+        unrelated.kill()
+        unrelated.wait(timeout=30)
+    # A runner whose identity cannot be read at spawn never runs unidentified: the job fails to start.
+    monkeypatch.setattr(procs, "identity", lambda pid: None)
+    started = jobs.launch(LaunchRequest("new-open-case", str(_folder(case_root, "Caso Sin Identidad"))), ADMIN)
+    row = cstore.get_job(started["id"])
+    assert row["status"] == "failed" and row["runner_started"] is None and "verificar" in row["error"]
 
 
 def test_a_job_outlives_the_service_that_launched_it(make_jobs, case_root, cstore, store, settings, fake_agent,

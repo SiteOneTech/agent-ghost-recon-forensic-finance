@@ -48,7 +48,10 @@ def profile_args() -> List[str]:
     return ["-p", name] if name else []
 
 
-_IDENTITY_TOLERANCE_S = 0.01
+# Linux computes create_time as ctime + boot_time() and re-reads the boot time on every call, so an NTP/timesyncd
+# step, a VM time sync or a resume shifts a live process's create_time; a strict match would turn a healthy job into
+# an orphan and make kill_tree refuse its own agent. PID reuse to the same number within 2 s is negligible.
+_IDENTITY_TOLERANCE_S = 2.0
 
 
 def child_env() -> Dict[str, str]:
@@ -84,13 +87,19 @@ def identity(pid: Any) -> Optional[float]:
         return None
 
 
+def same_process(create_time: float, started: Any) -> bool:
+    """Whether a process created at ``create_time`` is the one fingerprinted as ``started``. An unknown fingerprint
+    (None) never matches: without it nothing proves the PID still names our process."""
+    return started is not None and abs(float(create_time) - float(started)) <= _IDENTITY_TOLERANCE_S
+
+
 def _matching(pid: Any, started: Any):
     import psutil
     if not pid:
         return None
     try:
         proc = psutil.Process(int(pid))
-        if started is not None and abs(proc.create_time() - float(started)) > _IDENTITY_TOLERANCE_S:
+        if not same_process(proc.create_time(), started):
             return None
     except (psutil.Error, TypeError, ValueError):
         return None
@@ -106,13 +115,15 @@ def _matching(pid: Any, started: Any):
 
 def alive(pid: Any, started: Any) -> bool:
     """True while the process that had ``pid`` at ``started`` still runs. A zombie (a dead child nobody has waited
-    for yet) and a recycled PID both count as dead."""
+    for yet) and a recycled PID both count as dead, and so does any PID without a fingerprint (``started`` None):
+    its identity cannot be confirmed, so it is never taken for the job's process."""
     return _matching(pid, started) is not None
 
 
 def kill_tree(pid: Any, started: Any, *, timeout: float = 10.0) -> bool:
     """Terminate the process and every descendant, snapshotting the tree first so reparented grandchildren are
-    included; escalate to kill after half the timeout. False when the identity does not match (nothing signalled)."""
+    included; escalate to kill after half the timeout. False when the identity does not match or is unknown
+    (nothing signalled)."""
     import psutil
     root = _matching(pid, started)
     if root is None:
