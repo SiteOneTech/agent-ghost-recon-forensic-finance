@@ -4,7 +4,8 @@
 // signed in again, returns to the route the user was on.
 const BASE = "/api/v1";
 const RETURN_KEY = "gr.return";
-const SESSION_CLOSED = "La sesión se cerró por inactividad. Vuelve a entrar.";
+// Any lost session lands here: idle expiry, a revoked session or a disabled user, so the wording names none of them.
+const SESSION_CLOSED = "La sesión se cerró (por inactividad o porque un admin la cerró). Vuelve a entrar.";
 const CONSOLE_ROUTE = /^#\/(?!\/)[A-Za-z0-9\-._~%/]*$/; // a hash route of this page, nothing else
 let csrf = null;
 let sessionClosed = false;

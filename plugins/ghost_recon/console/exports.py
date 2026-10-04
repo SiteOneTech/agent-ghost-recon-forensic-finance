@@ -34,6 +34,7 @@ from .store import ACTIVE_STATUSES, EXPORT_PENDING, ConsoleStore
 
 logger = logging.getLogger(__name__)
 INTERRUPTED = "La exportación se interrumpió porque la consola se reinició: vuelve a exportar."
+ABANDONED = "La exportación quedó sin terminar (la base de datos no respondió) y se descartó: vuelve a exportar."
 INTERNAL = "Error interno al construir el ZIP; el detalle quedó en el log del servidor."
 PROGRESS_EVERY_S = 0.5
 STOP_JOIN_S = 30.0
@@ -107,7 +108,7 @@ class ExportService:
                 if pending["id"] in self._owned:
                     raise ExportError(409, "export_pending", "Ya hay una exportación en curso para este caso "
                                       f"(#{pending['id']}).", extra={"export_id": pending["id"]})
-                self._fail(pending, "interrupted", INTERRUPTED)
+                self._fail(pending, "interrupted", ABANDONED)
             row = self.cstore.create_export(case_id=case["id"], scope=scope, seq=seq if scope == "audit" else None,
                                             include_unsealed=include_unsealed, created_by=principal.username)
             self._owned.add(row["id"])

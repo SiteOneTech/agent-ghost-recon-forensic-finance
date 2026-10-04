@@ -130,7 +130,7 @@ def test_an_export_whose_state_writes_keep_failing_never_blocks_its_case(login_a
                        message="a new export of the case")
     assert locked["id"] == stuck
     row = cstore.get_export(stuck)
-    assert row["status"] == "failed" and row["detail"] == {"code": "interrupted"} and "reinici" in row["error"]
+    assert row["status"] == "failed" and row["detail"] == {"code": "interrupted"} and "descartó" in row["error"]
     assert _wait_done(c, wait_until, fresh.json()["export_id"])["status"] == "succeeded"
 
 
