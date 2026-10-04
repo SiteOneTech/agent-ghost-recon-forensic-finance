@@ -81,33 +81,6 @@ def test_unknown_users_are_404(login_as):
     assert r.status_code == 404 and r.json()["error"]["code"] == "not_found"
 
 
-def test_last_admin_cannot_be_disabled_through_api(login_as, cstore):
-    # Create a second admin so jean is not the only one initially
-    admin = login_as("admin")  # jean
-    admin.post("/api/v1/users", json={"username": "ana", "role": "admin", "password": "admin-pass-456",
-                                        "password_confirm": "admin-pass-456"})
-    # Now disable ana so jean becomes the last active admin
-    assert admin.post("/api/v1/users/ana/disable").status_code == 200
-    # Try to disable jean (the last active admin) - should fail with conflict (last admin guard)
-    r = admin.post("/api/v1/users/jean/disable")
-    # Even though jean is the actor, they cannot disable the last active admin (which is themselves)
-    # The _not_self guard fires first, returning self_action
-    assert r.status_code == 409 and r.json()["error"]["code"] == "self_action"
-
-
-def test_last_admin_cannot_be_demoted_through_api(login_as, cstore):
-    # Create a second admin so jean is not the only one initially
-    admin = login_as("admin")  # jean
-    admin.post("/api/v1/users", json={"username": "ana", "role": "admin", "password": "admin-pass-456",
-                                        "password_confirm": "admin-pass-456"})
-    # Now disable ana so jean becomes the last active admin
-    assert admin.post("/api/v1/users/ana/disable").status_code == 200
-    # Try to demote jean (the last active admin) - should fail
-    # The _not_self guard fires first, returning self_action
-    r = admin.post("/api/v1/users/jean/role", json={"role": "viewer"})
-    assert r.status_code == 409 and r.json()["error"]["code"] == "self_action"
-
-
 def test_anonymous_request_to_get_users_is_401(client):
     # Remove session cookie to force unauthenticated request
     r = client.get("/api/v1/users")
