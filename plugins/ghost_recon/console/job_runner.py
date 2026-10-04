@@ -58,9 +58,18 @@ class Runner:
         case = self.store.get_case(job["folder"])
         return case.get("id") if case else None
 
+    def _is_mine(self, job: Dict[str, Any]) -> bool:
+        """The one "is this job mine" decision. The claim accepts ``running`` because the launcher flips the row to
+        running (stamping ``runner_pid``) right after spawning us, possibly before we start; a ``running`` row
+        stamped with another runner's PID belongs to that runner, and a second agent must never start for it."""
+        if not job or job["status"] not in ACTIVE_STATUSES:
+            return False
+        owner = job.get("runner_pid")
+        return not (job["status"] == "running" and owner and int(owner) != os.getpid())
+
     def run(self) -> str:
         job = self.cstore.get_job(self.job_id)
-        if not job or job["status"] not in ACTIVE_STATUSES:
+        if not self._is_mine(job):
             return job.get("status", "missing") if job else "missing"
         if not self.cstore.update_job(self.job_id, expect=ACTIVE_STATUSES, status="running"):
             return self._status()
@@ -72,7 +81,15 @@ class Runner:
         except OSError as exc:
             self._finish(job, {"status": "failed", "exit_code": None, "error": f"no se pudo iniciar el agente: {exc}"})
             return self._status()
-        self.cstore.update_job(self.job_id, expect=("running",), pid=agent.pid, pid_started=procs.identity(agent.pid))
+        started = procs.identity(agent.pid)
+        try:
+            self.cstore.update_job(self.job_id, expect=("running",), pid=agent.pid, pid_started=started)
+            return self._supervise(job, agent)
+        except BaseException as exc:
+            self._abort(job, agent, started, exc)
+            raise
+
+    def _supervise(self, job: Dict[str, Any], agent: subprocess.Popen) -> str:
         while agent.poll() is None:
             if not self._pump(job, final=False):
                 procs.kill_tree(agent.pid, None)
@@ -82,6 +99,21 @@ class Runner:
         self._pump(job, final=True)
         self._finish(job, final_state(agent.returncode, self.norm.result, jobfiles.tail(self.log, lines=5)))
         return self._status()
+
+    def _abort(self, job: Dict[str, Any], agent: subprocess.Popen, started: Optional[float], exc: BaseException) -> None:
+        """An unexpected error after the agent started: never leave it running unsupervised. Kill its tree, then mark
+        the job failed conditionally on ``running`` so a cancel or orphan verdict still wins."""
+        procs.kill_tree(agent.pid, started)
+        try:
+            agent.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+        error = f"error interno del runner: {type(exc).__name__}: {exc}"[:500]
+        try:
+            self.cstore.update_job(self.job_id, expect=("running",), status="failed", error=error,
+                                   exit_code=agent.returncode, finished_at=utcnow())
+        except Exception:  # the store itself may be what failed; the original exception is re-raised by the caller
+            pass
 
     def _pump(self, job: Dict[str, Any], *, final: bool) -> bool:
         """Normalize what the agent wrote since the last call and keep phase/session/case current. False when the

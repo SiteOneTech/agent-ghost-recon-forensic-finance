@@ -8,7 +8,7 @@ import threading
 
 import pytest
 
-from plugins.ghost_recon.console import jobfiles, procs
+from plugins.ghost_recon.console import job_runner, jobfiles, procs
 from plugins.ghost_recon.console.commands import agent_args
 from plugins.ghost_recon.console.events import Normalizer
 from plugins.ghost_recon.console.job_runner import SELF_CHECK, Runner
@@ -94,6 +94,51 @@ def test_a_cancel_wins_over_the_runner_final_write(cstore, store, evidence, fake
     final = cstore.get_job(job["id"])
     assert (final["status"], final["error"]) == ("cancelled", "cancelada por jean")
     assert not procs.alive(row["pid"], row["pid_started"])
+
+
+def test_a_cancel_between_agent_exit_and_the_final_write_stays_cancelled(
+        cstore, store, evidence, fake_agent, monkeypatch):  # Review Focus 4, the _finish path
+    job = _job(cstore, evidence, fake_agent({"steps": 1}))
+    real = job_runner.final_state
+
+    def cancel_then_decide(*args, **kwargs):
+        cstore.update_job(job["id"], status="cancelled", error="cancelada por jean")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(job_runner, "final_state", cancel_then_decide)
+    assert _run(cstore, store, job["id"]) == "cancelled"
+    final = cstore.get_job(job["id"])
+    assert (final["status"], final["error"]) == ("cancelled", "cancelada por jean")
+    case = store.get_case(str(evidence.resolve()))
+    assert not [e for e in store.list_events(case["id"]) if e["event_type"] == "console_job_finished"]
+
+
+def test_a_job_running_under_another_runner_is_left_alone(cstore, store, evidence, fake_agent):
+    job = _job(cstore, evidence, fake_agent())
+    assert cstore.update_job(job["id"], status="running", runner_pid=os.getpid() + 100000)
+    before = cstore.get_job(job["id"])
+    assert _run(cstore, store, job["id"]) == "running"
+    assert cstore.get_job(job["id"]) == before
+    assert not jobfiles.raw_path(jobfiles.jobs_dir(), job["id"]).exists()
+
+
+def test_an_unexpected_runner_error_kills_the_agent_and_fails_the_job(
+        cstore, store, evidence, fake_agent, wait_until, monkeypatch):
+    job = _job(cstore, evidence, fake_agent({"hang": True}))
+    seen = {}
+    real = Normalizer.feed_line
+
+    def boom(self, line):
+        seen["row"] = cstore.get_job(job["id"])
+        raise RuntimeError("disco lleno")
+
+    monkeypatch.setattr(Normalizer, "feed_line", boom)
+    with pytest.raises(RuntimeError, match="disco lleno"):
+        _run(cstore, store, job["id"])
+    row = cstore.get_job(job["id"])
+    assert row["status"] == "failed" and "RuntimeError" in row["error"] and "disco lleno" in row["error"]
+    assert not procs.alive(seen["row"]["pid"], seen["row"]["pid_started"])
+    monkeypatch.setattr(Normalizer, "feed_line", real)
 
 
 def test_the_runner_module_runs_a_job_to_completion(cstore, evidence, fake_agent):
