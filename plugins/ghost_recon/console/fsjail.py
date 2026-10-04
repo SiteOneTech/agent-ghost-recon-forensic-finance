@@ -100,8 +100,16 @@ def _hidden(entry: os.DirEntry) -> bool:
     return bool(attrs & _HIDDEN_ATTRS)
 
 
+def _entry_inside_roots(entry: os.DirEntry, roots: Sequence[Path]) -> bool:
+    """Check whether a directory entry resolves inside the roots (blocks symlinks, junctions, and other escapes)."""
+    try:
+        return resolve_within(entry.path, roots) is not None
+    except OSError:
+        return False
+
+
 def _subfolders(folder: Path, roots: Sequence[Path], skip: Sequence[str]) -> List[Path]:
-    """Visible subfolders; a symlinked folder is kept only when it resolves inside a root."""
+    """Visible subfolders that resolve inside the roots (blocks symlinks, junctions, and cross-root escapes)."""
     try:
         entries = list(os.scandir(folder))
     except OSError:
@@ -113,7 +121,7 @@ def _subfolders(folder: Path, roots: Sequence[Path], skip: Sequence[str]) -> Lis
         try:
             if not entry.is_dir(follow_symlinks=True):
                 continue
-            if entry.is_symlink() and resolve_within(entry.path, roots) is None:
+            if not _entry_inside_roots(entry, roots):
                 continue
         except OSError:
             continue
@@ -122,11 +130,20 @@ def _subfolders(folder: Path, roots: Sequence[Path], skip: Sequence[str]) -> Lis
 
 
 def count_files(folder: Path, skip: Sequence[str] = (), cap: int = COUNT_CAP) -> Dict[str, Any]:
-    """Files under ``folder`` (hidden entries and ``skip`` folders excluded), stopping at ``cap``."""
+    """Files under ``folder`` (hidden entries, symlinks and ``skip`` folders excluded), stopping at ``cap``."""
     total = 0
     for _dirpath, dirnames, filenames in os.walk(folder):
         dirnames[:] = [d for d in dirnames if _visible_name(d) and d not in skip]
-        total += sum(1 for f in filenames if _visible_name(f))
+        for f in filenames:
+            if not _visible_name(f):
+                continue
+            fpath = Path(_dirpath) / f
+            try:
+                if fpath.is_symlink():
+                    continue
+            except OSError:
+                continue
+            total += 1
         if total >= cap:
             return {"files": cap, "capped": True}
     return {"files": total, "capped": False}
@@ -239,12 +256,16 @@ def inspect(raw: str, roots: Sequence[Path], *, store: Store, audits_dirname: st
     files = size = zips = images = 0
     capped = False
     for dirpath, dirnames, filenames in os.walk(folder):
-        dirnames[:] = [d for d in dirnames if _visible_name(d) and d != audits_dirname]
+        dirnames[:] = [d for d in dirnames if _visible_name(d) and d != audits_dirname and
+                       resolve_within(str(Path(dirpath) / d), roots) is not None]
         for name in filenames:
             if not _visible_name(name):
                 continue
+            fpath = Path(dirpath) / name
             try:
-                size += (Path(dirpath) / name).stat().st_size
+                if fpath.is_symlink():
+                    continue
+                size += fpath.stat().st_size
             except OSError:
                 continue
             ext = Path(name).suffix.lower() or "(sin extensión)"

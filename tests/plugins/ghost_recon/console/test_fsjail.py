@@ -143,3 +143,38 @@ def test_inspect_of_a_sealed_case_suggests_rerun_and_flags_active_jobs(seeded, c
     assert info["case"]["id"] == seeded["case_id"] and info["case"]["sealed"] == 1
     assert info["suggested_command"] == "rerun-case" and info["active_jobs"] == [7]
     assert {"sealed_case", "active_job"} <= {w["code"] for w in info["warnings"]}
+
+
+@pytest.mark.platforms("windows")
+def test_directory_junctions_escaping_root_are_not_listed_or_walked(root, tmp_path, store):
+    """Windows junctions can point outside the root; they must not leak folder names, paths, or file counts."""
+    import subprocess
+    secret = tmp_path / "secreto"
+    secret.mkdir()
+    (secret / "hidden.txt").write_text("x", encoding="utf-8")
+    junction = root / "Nueva B" / "junction_to_secret"
+    subprocess.run(["cmd", "/c", "mklink", "/J", str(junction), str(secret)], check=True)
+    roots = fsjail.configured_roots([str(root)])
+    # Junction should not be listed
+    names = [i["name"] for i in fsjail.list_dir(str(root / "Nueva B"), roots, store=store, audits_dirname=AUDITS)["items"]]
+    assert "junction_to_secret" not in names
+    # Junction should not be found by search
+    results = fsjail.search("secret", roots)
+    assert not any(i["name"] == "secreto" for i in results["items"])
+    # Junction's files should not be counted in Nueva B
+    info = fsjail.inspect(str(root / "Nueva B"), roots, store=store, audits_dirname=AUDITS, defaults={})
+    assert info["files"] == 3  # only the original 3 .csv files, not the hidden.txt from junction
+
+
+@pytest.mark.platforms("posix")
+def test_symlinked_files_are_not_counted_or_stat_d(root, tmp_path, store):
+    """Symlinked files pointing outside the root must not leak their size or existence."""
+    secret_file = tmp_path / "secreto.txt"
+    secret_file.write_bytes(b"x" * 10000)
+    link = root / "Nueva B" / "link_to_secret.txt"
+    os.symlink(secret_file, link)
+    roots = fsjail.configured_roots([str(root)])
+    # File count should not include the symlinked file (only 3 csv files, not 3 + 1)
+    info = fsjail.inspect(str(root / "Nueva B"), roots, store=store, audits_dirname=AUDITS, defaults={})
+    assert info["files"] == 3  # only the 3 .csv files, symlink not counted
+    assert info["size"] == 3  # 1 byte per .csv file, symlink's 10000 bytes not counted
