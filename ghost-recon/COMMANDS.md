@@ -48,7 +48,7 @@ hermes ghostrecon export <id|folder> --out <file.json>
 hermes ghostrecon import <case.json>         re-importa un caso desde su espejo
 ```
 
-## 3b. Consola web (sin agente en H1)
+## 3b. Consola web
 
 ```
 hermes ghostrecon serve [--host 127.0.0.1] [--port 9230] [--allow-remote]
@@ -59,15 +59,39 @@ hermes ghostrecon token list | token revoke <id>
 ```
 
 - Escucha en `127.0.0.1:9230`. Desde otra PC se entra por túnel: `ssh -L 9230:127.0.0.1:9230 usuario@maquina` y luego `http://localhost:9230`.
-- `serve` no arranca sin un admin activo. Fuera de loopback exige `--allow-remote` y un proxy TLS delante.
+- `serve` no arranca sin un admin activo: el primero se crea con `user add … --role admin`; los demás usuarios y los tokens también se gestionan desde **Sistema › Usuarios y tokens** (solo admin). Fuera de loopback exige `--allow-remote` y un proxy TLS delante.
 - `--role` es opcional (por defecto `viewer`). `user passwd <nombre> --password-stdin` lee la nueva contraseña de stdin (una línea), igual que `user add`.
 - `--allow-remote` con `0.0.0.0` o una IP de Tailscale también exige listar ese nombre o IP en `allowed_hosts`; si no, la consola responde 400 `bad_host`.
 - Seguridad de la cookie: la sesión usa una cookie `gr_session_<puerto>` (una por consola) HttpOnly y SameSite=Strict, pero, como cualquier cookie de localhost, también se envía a otros puertos locales. En una PC compartida usa el túnel SSH hacia un puerto local dedicado y pulsa «Salir» al terminar.
-- Roles: `viewer` lee y descarga entregables de auditorías selladas; `admin` además descarga los de auditorías abiertas y ve el registro de la consola.
+- Roles: `viewer` lee, sigue las ejecuciones y descarga entregables de auditorías selladas; `admin` además lanza y cancela ejecuciones, descarga entregables de auditorías abiertas, gestiona usuarios y tokens y ve el registro de la consola. Nadie se deshabilita ni se cambia el rol a sí mismo, y el último admin activo no se puede deshabilitar ni degradar; esa comprobación está serializada, así que dos admins que actúan a la vez el uno sobre el otro nunca dejan cero admins.
+- **Ejecuciones desde la consola** («+ Nueva auditoría» y, en la página del caso, «▶ Re-run» y «▶ Review»):
+  - el navegador de carpetas solo ve las carpetas de `case_roots`; la evidencia se copia antes a una de ellas (RustDesk/SFTP). La consola no sube archivos. El jail también contiene las uniones NTFS (junctions) y los archivos que son enlaces simbólicos: nada que apunte fuera de `case_roots` se lista, cuenta, mide ni busca;
+  - cada ejecución corre `<hermes> -p <perfil> --cli --accept-hooks --skills <orden> chat -q "/<orden> …" --format stream-json --source ghost-recon-console` en su propio proceso (`job_runner`), así que sobrevive a cerrar el navegador y a reiniciar la consola. La vista previa muestra exactamente esa orden;
+  - el runner solo es dueño de una ejecución cuando el `runner_pid` de la fila es el suyo o el de su proceso padre (un único salto de lanzador: el redirector del venv en Windows); el servidor graba el PID que lanzó;
+  - las «Notas adicionales» se guardan en `<carpeta de resultados>/_console/context_<hash>.md`, con el `context.md` original literal y su SHA-256; el agente las registra como criterio del operador (`CRIT-nn`), nunca como hecho. El `context.md` original no se toca;
+  - límites: una ejecución activa por carpeta o caso y `max_parallel_jobs` en total (por defecto 2); lo demás queda en cola y arranca solo;
+  - «Cancelar» detiene el agente y todo lo que lanzó; la auditoría a medio hacer queda abierta, sin sellar, y el siguiente Re-run la continúa. Una ejecución cuyo proceso desaparece sin cerrar queda «interrumpida» (huérfana) y su agente se detiene;
+  - la vista en vivo (SSE) lee la fila de la ejecución antes que los eventos y termina solo cuando una fila ya terminal va seguida de una lectura vacía, así que no se pierde ningún evento final;
+  - «Continuar en terminal» copia `hermes -p <perfil> --resume <session_id>`; con `dashboard_url`, «Continuar en chat» abre la sesión en el dashboard;
+  - archivos de cada ejecución en `<plugin-data>/ghost-recon/console/jobs/`: `<id>.jsonl` (salida del agente), `<id>.log` (errores del agente), `<id>.events.jsonl` (actividad) y `<id>.runner.log`.
 - API: `/api/v1/…`; el esquema está en `/api/v1/openapi.json`, tras el login.
-- Configuración: `plugins.entries.ghost-recon.settings.console` en `config.yaml` (`host`, `port`, `session_idle_hours`, `session_max_days`, `allowed_hosts`).
-- Demo local sin LLM: `python ghost-recon/demo/console_demo.py`.
-- Diseño completo y próximos hitos (lanzar órdenes, exportar ZIP, búsqueda, avisos): `ghost-recon/specs/2026-10-02-ghost-recon-console-design.md`.
+- Configuración: `plugins.entries.ghost-recon.settings.console` en `config.yaml` (la consola no la edita):
+
+```yaml
+plugins:
+  entries:
+    ghost-recon:
+      settings:
+        console:
+          case_roots: [/home/ghostrecon/GhostRecon/Casos]   # obligatoria para lanzar
+          max_parallel_jobs: 2
+          dashboard_url: http://127.0.0.1:9119               # opcional: «Continuar en chat»
+          # además: host, port, session_idle_hours, session_max_days, allowed_hosts
+```
+
+- **Máquina dedicada (Linux):** la consola corre como servicio systemd con el usuario `ghostrecon` y `HERMES_HOME=/home/ghostrecon/.hermes`. El agente y el runner se lanzan con el lanzador de la instalación (`<checkout>/.hermes/bin/hermes`), nunca con lo que haya en el `PATH`. La unidad necesita `KillMode=process`: con el valor por defecto (`control-group`), `systemctl restart` mataría también las auditorías en curso. Si `config.yaml` fija `max_concurrent_sessions`, ese límite también cuenta las ejecuciones de la consola (una que no cabe queda «fallida», con el motivo en el log técnico).
+- Demo local sin LLM (agente simulado y carpeta de casos temporal): `python ghost-recon/demo/console_demo.py`. Debe ejecutarse con el Python del runtime de Hermes (o del venv de pruebas), porque necesita psutil: en Windows de desarrollo `.venv/Scripts/python.exe ghost-recon/demo/console_demo.py`; en una instalación de Hermes, el intérprete del lanzador de PM. Con el Python del sistema, sin psutil, el lanzamiento responde 500.
+- Diseño completo y próximos hitos (exportación `.zip`, tablas CSV/XLSX, búsqueda entre casos, avisos): `ghost-recon/specs/2026-10-02-ghost-recon-console-design.md`.
 
 ## 4. Herramientas del agente (toolset `ghost_recon`)
 

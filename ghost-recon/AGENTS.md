@@ -26,9 +26,16 @@ genérica de plugins (ver `plugins/AGENTS.md`), nunca se cablea lógica Ghost Re
 - Skills bundled: cumplir HARDLINE de `skills/AGENTS.md` (descripción ≤ 60 chars con punto final,
   secciones `When to Use / Prerequisites / How to Run / Quick Reference / Procedure / Pitfalls /
   Verification`, herramientas nativas en backticks). El texto largo va en `references/`.
-- La consola (`plugins/ghost_recon/console/`) **solo escribe tablas `console_*`**; los datos de caso se leen por `core`
-  (`Store`, `service`). Todo path que llega del navegador pasa por `console/paths.resolve_within`. En el frontend,
-  nada de `innerHTML` con datos: siempre `h()` (`static/lib/dom.js`).
+- La consola (`plugins/ghost_recon/console/`) **solo escribe** sus tablas `console_*`, el archivo de contexto combinado
+  (`<resultados>/_console/context_<hash>.md`) y los eventos `console_job_*` de la cronología del caso (con
+  `Store.add_event`); los datos de caso se leen por `core` (`Store`, `service`). Toda carpeta que llega del navegador
+  pasa por `console/fsjail.resolve` (dentro de `case_roots`) y toda descarga por `console/paths.resolve_within`. En el
+  frontend, nada de `innerHTML` con datos: siempre `h()` (`static/lib/dom.js`).
+- Procesos de la consola: lo que toca internos de Hermes para lanzar, vigilar o detener ejecuciones vive solo en
+  `console/procs.py` (lanzador de la instalación, entorno del perfil, desacople, árbol con psutil e identidad PID +
+  create time). La orden (`commands.py`), las fases (`events.py`) y los límites (`jobs.py`) son Python probado; el JS
+  solo pinta. Toda escritura de estado de un job es condicional (`update_job(..., expect=...)`).
+- La UI no nombra hitos ni comandos: lo que aún no existe aparece deshabilitado con el aviso «Próximamente».
 
 ## Pruebas
 
@@ -53,3 +60,7 @@ python ghost-recon/demo/smoke_test.py                          # ciclo completo 
 | cambiar login, roles o sesiones de la consola | `console/auth.py`, `console/deps.py` (`require`, CSRF) |
 | cambiar una pantalla de la consola | `console/static/views/*.js` (pestañas del caso en `views/case/`) y `static/app.css` |
 | cambiar colores/logo de la consola | `console/static/theme.css` (variables) |
+| cambiar una orden lanzable o su texto `-q` | `console/commands.py` (`ORDERS`, `build_query`) + la skill de la orden |
+| cambiar cómo se deducen las fases o el feed de una ejecución | `console/events.py` (`PHASES`, `_FIXED_PHASE`, `_SUMMARY`) |
+| cambiar límites, cola, cancelación o huérfanos | `console/jobs.py` (`JobService`) y `console/job_runner.py` |
+| cambiar qué carpetas ve el navegador de la consola | `console/fsjail.py` y `case_roots` en la configuración |

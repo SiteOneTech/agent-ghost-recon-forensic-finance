@@ -42,11 +42,10 @@ Todo esto sin usar la terminal y sin tocar el core de Hermes.
 
 ## 3. Alcance
 
-**Dentro (v1):** las cuatro entregas de §13. Son la base técnica, el motor de ejecuciones, el asistente de nueva auditoría con notas de contexto, las vistas de casos, la ejecución en vivo, la exportación `.zip`, las tablas a CSV/XLSX, la búsqueda entre casos, los avisos, el instalador del servicio y la documentación.
+**Dentro (v1):** las cuatro entregas de §13. Son la base técnica, el motor de ejecuciones, el asistente de nueva auditoría con notas de contexto, las vistas de casos, la ejecución en vivo, la exportación `.zip`, las tablas a CSV/XLSX, la búsqueda entre casos, los avisos, el instalador del servicio, la administración de usuarios y tokens desde Sistema (además del CLI) y la documentación.
 
 **Fuera (v1), anotado como posibles iteraciones:**
 - editar hallazgos, criterios o casos desde la web (va contra C7);
-- una pantalla de administración de usuarios (en v1 se hace por CLI);
 - subir el ZIP a un bucket;
 - programar ejecuciones (cron) desde la consola;
 - descargar la evidencia original;
@@ -89,11 +88,13 @@ plugins/ghost_recon/console/
 ├── commands.py       construcción y validación de órdenes (tabla orden → skill/args), contexto combinado
 ├── jobs.py           JobService: crear, encolar, lanzar, cancelar, huérfanos, límites
 ├── job_runner.py     proceso desacoplado: ejecuta el agente, persiste salida y estado, notifica
+├── procs.py          procesos con Hermes: lanzador de la instalación, entorno del perfil, desacople, árbol (psutil)
+├── jobfiles.py       archivos por ejecución (<id>.jsonl, .log, .events.jsonl, .runner.log), lectura incremental
 ├── events.py         normalización stream-json → eventos de consola + deducción de fases (puro)
 ├── exporter.py       ZIP de resultados + EXPORT_MANIFEST.json; tablas CSV/XLSX
 ├── search.py         búsqueda entre casos
 ├── cli.py            subcomandos serve | user | token (registrados bajo `hermes ghostrecon`)
-├── routers/          auth.py system.py fs.py cases.py audits.py jobs.py exports.py search.py
+├── routers/          auth.py system.py fs.py cases.py audits.py jobs.py users.py exports.py search.py
 └── static/           index.html, app.js (módulos ES), views/*.js, theme.css (variables), app.css, fonts/
 ```
 
@@ -130,14 +131,18 @@ console_tokens     id PK, user_id FK, name, token_sha256 UNIQUE, prefix (8 chars
 console_audit_log  id PK, ts, user_id, username, ip, action (login|login_failed|logout|job_launch|
                    job_cancel|export|user_add|user_disable|token_create|token_revoke|…), target, detail JSON
 console_jobs       id PK (int), command (new-open-case|rerun-case|review-case), case_id NULL
-                   (se completa al abrir), folder (absoluta), args JSON (validados), context_file,
-                   status (queued|running|succeeded|failed|cancelled|orphaned), pid, runner_pid,
+                   (se completa al abrir), folder (absoluta), args JSON (validados), argv JSON (la orden
+                   exacta que se ejecuta), context_file,
+                   status (queued|running|succeeded|failed|cancelled|orphaned), pid, pid_started,
+                   runner_pid, runner_started (create time: identidad frente a PID reciclados),
                    session_id, exit_code, launched_by, created_at, started_at, finished_at,
                    result_text, tokens JSON, error, phase (última fase deducida), notify_target
 console_seal_checks  audit_id PK, ok (0/1), checked_at, checked_by, detail JSON
 ```
 
 Sesiones y tokens se guardan solo como SHA-256. El token en claro se muestra una única vez.
+
+`console_schema_version` tiene una sola fila; `migrate()` aplica en orden las migraciones por encima de la versión guardada (v1 = tablas de H1, v2 = `console_jobs`).
 
 caché de la última verificación de sello por auditoría.
 
@@ -174,9 +179,9 @@ running ──(runner muerto sin estado final)──▶ orphaned
 ```
 
 1. `POST /jobs` valida, escribe el contexto combinado (§7), crea la fila `queued` y llama a `JobService.dispatch()`.
-2. `dispatch()` respeta dos límites: **una ejecución activa por caso o carpeta**, y **`max_parallel_jobs` en total** (por defecto 2). Lo que no cabe queda `queued` y se despacha cuando se libera un hueco. El despacho se reevalúa al arrancar el servidor, al terminar un job y cada 10 s.
+2. `dispatch()` respeta dos límites: **una ejecución activa por caso o carpeta**, y **`max_parallel_jobs` en total** (por defecto 2). Lo que no cabe queda `queued` y se despacha cuando se libera un hueco. El despacho se reevalúa al arrancar el servidor, tras cada lanzamiento o cancelación y cada 10 s (el ciclo también recoge los runners terminados). Repetir la misma orden sobre una carpeta que ya la tiene activa o en cola responde `409 already_active`; una orden distinta queda en cola.
 3. El **`job_runner`** es un proceso desacoplado, uno por job. Su trabajo:
-   - marca `running` con `runner_pid`;
+   - el servidor registra `runner_pid` y su create time al lanzarlo; el runner confirma `running` (si encuentra la fila cancelada, sale sin lanzar el agente) y ejecuta el argv guardado en la fila, sin reconstruirlo. El runner solo es dueño del job si `runner_pid` es su propio pid o el de su padre (un salto de lanzador, p. ej. el redirector del venv en Windows);
    - lanza el agente con stdout hacia `jobs/<id>.jsonl` y stderr hacia `jobs/<id>.log` (bajo `plugin_data_dir/ghost-recon/console/jobs/`);
    - lee el `session_id` del evento `system/init`;
    - mientras corre, actualiza `phase` en la BD a partir de los eventos (§6.3);
@@ -184,7 +189,7 @@ running ──(runner muerto sin estado final)──▶ orphaned
    - si hay `notify_target`, ejecuta `hermes -p <perfil> send --to <destino> --subject "[Ghost Recon]" "<resumen>"`;
    - registra el evento en el timeline del caso (`console_job_finished`).
 4. **Cancelar** marca `cancelled` y mata el árbol de procesos del runner con `psutil`, a partir del `runner_pid` (§4.3). La auditoría a medio hacer queda abierta, sin sellar. El estado real de la carpeta del caso lo maneja el agente en el siguiente `rerun`.
-5. **Huérfanos:** si `runner_pid` ya no existe y la fila sigue `running`, el job pasa a `orphaned`. Se comprueba al arrancar el servidor y en cada ciclo de despacho, y se muestra la cola del log.
+5. **Huérfanos:** si `runner_pid` ya no existe y la fila sigue `running`, el job pasa a `orphaned`. Se comprueba al arrancar el servidor y en cada ciclo de despacho, y se muestra la cola del log. El agente que quedó sin runner se detiene (árbol completo), para que nunca haya dos agentes sobre la misma carpeta.
 6. El servidor nunca es padre necesario del runner. Reiniciarlo no afecta a las ejecuciones en curso, y la consola las reencuentra en la BD.
 
 ### 6.3 Eventos y fases (`events.py`, puro)
@@ -221,10 +226,10 @@ Las fases se deducen con una tabla:
 - En el paso 3 de "Nueva auditoría" y en los diálogos de Re-run y Review aparecen dos cosas:
   - el `context.md` de la carpeta, si existe (solo lectura, con su SHA-256);
   - un campo **"Notas adicionales"** (Markdown, ≤ 20 000 caracteres).
-- Al lanzar, si hay notas, la consola escribe `<salidas>/_console/context_<job>.md`. `<salidas>` es `<carpeta>/<audits_dirname>/` o el `--out` indicado; nunca la carpeta de evidencia. El archivo tiene esta forma:
+- Al lanzar, si hay notas, la consola escribe `<salidas>/_console/context_<hash>.md` (12 caracteres del SHA-256 de: hash del original, usuario y notas; el nombre no depende del id del job, así que la vista previa muestra exactamente la orden que se ejecutará). `<salidas>` es `<carpeta>/<audits_dirname>/` o el `--out` indicado; nunca la carpeta de evidencia. El archivo tiene esta forma:
 
 ```markdown
-# Contexto de la ejecución <job> (<orden>)
+# Contexto de la ejecución (<orden>) · consola Ghost Recon
 ## Contexto original
 Fuente: <ruta>/context.md · SHA-256 <hash>      (o "sin context.md en la carpeta")
 <contenido literal del original>
@@ -234,6 +239,7 @@ Fuente: <ruta>/context.md · SHA-256 <hash>      (o "sin context.md en la carpet
 ```
 
 - Ese archivo es el `context_file` que recibe la orden. Si no hay notas, se pasa el `context.md` original tal cual, o nada.
+- Si el `context.md` cambia entre la vista previa y el lanzamiento, el lanzamiento responde `409 context_changed`.
 - Como vive en la carpeta de resultados del caso, el agente lo referencia desde el manifiesto de la auditoría y queda dentro de lo que se exporta.
 
 ## 8. API `/api/v1`
@@ -253,8 +259,10 @@ Convenciones:
 | Ejecuciones | `POST /jobs/preview`, `POST /jobs` → 202, `POST /jobs/{id}/cancel`, `GET /jobs?status=&case=`, `GET /jobs/{id}`, `GET /jobs/{id}/events?after=`, `GET /jobs/{id}/events/stream` (SSE), `GET /jobs/{id}/log` | **admin** para lanzar y cancelar; viewer para leer |
 | Exportación | `POST /cases/{id}/export` (`{scope: case\|audit, seq?, include_unsealed?}`) → 202 + `export_id`, `GET /exports/{eid}` (estado, tamaño, sha256), `GET /exports/{eid}/download`; `GET /cases/{id}/{table}.csv\|.xlsx?<filtros>` para `table ∈ {findings, evidence, timeline, criteria}` | viewer (exportar con `include_unsealed=true`: **admin**) |
 | Búsqueda | `GET /search?q=&types=case,finding,evidence,criteria&limit=` | viewer |
+| Usuarios | `GET /users`, `POST /users`, `POST /users/{u}/password`, `POST /users/{u}/enable\|disable`, `POST /users/{u}/role`, `GET /tokens`, `POST /tokens` (el token en claro solo en esta respuesta), `POST /tokens/{id}/revoke` | **admin** (nadie se deshabilita ni se cambia el rol a sí mismo; el último admin activo no se puede deshabilitar ni degradar, con la comprobación serializada) |
 
 - `POST /cases/{id}/audits/{seq}/verify` recalcula los hashes del sello y cachea el resultado con su fecha en `console_seal_checks` (y la acción queda en `console_audit_log`). La vista muestra "verificado hace X".
+- `GET /jobs/{id}/events/stream` emite `event` (id = seq; al reconectar se reanuda desde `Last-Event-ID`), `status` (cambios de estado, fase, sesión o caso), `end` y un comentario de latido cada 15 s. Lee la fila del job antes que los eventos y termina solo cuando una fila terminal va seguida de una lectura vacía.
 - Lecturas: la consola abre la BD con `busy_timeout` (≥ 5 s) y solo escribe tablas `console_*`. SQLite en WAL permite leer mientras los agentes escriben.
 
 ## 9. Seguridad
@@ -316,7 +324,7 @@ La estructura A fue validada con maquetas el 2-oct-2026. Barra superior: marca, 
 7. **Ejecuciones:** la lista de todos los jobs con filtros por estado y caso.
 8. **Sistema:**
    - el doctor (BD, dependencias, Tavily presente o ausente, skills, límites de delegación, modo de aprobaciones, disco libre en las raíces);
-   - para admin, el registro de auditoría de la consola.
+   - para admin, el registro de auditoría de la consola y «Usuarios y tokens» (crear, restablecer contraseña, habilitar o deshabilitar, cambiar rol; crear tokens —se muestran una vez— y revocarlos).
 
 Detalles transversales:
 - **Avisos:** cuando una ejecución termina o falla se muestra una notificación del navegador, si el operador la permitió y la consola está abierta.
@@ -371,7 +379,7 @@ Son idempotentes.
 
 ## 13. Entrega por hitos
 
-Cada hito tiene **su propio plan de implementación** (`ghost-recon/specs/plans/`) y se integra por PR desde el worktree `ghost-recon-console`. Es usable por sí solo: lo que depende de un hito posterior aparece deshabilitado, con el texto "disponible en H2/H3". Por ejemplo, la pestaña Ejecuciones y los botones de lanzar y exportar en H1.
+Cada hito tiene **su propio plan de implementación** (`ghost-recon/specs/plans/`) y se integra por PR desde el worktree `ghost-recon-console`. Es usable por sí solo: lo que depende de un hito posterior aparece deshabilitado con el aviso «Próximamente», sin nombres de hito ni comandos (decisión del propietario en H2).
 
 | Hito | Contenido | Aceptación |
 |---|---|---|
@@ -410,4 +418,6 @@ Se ejecutan con `scripts/run_tests.sh`, con `HERMES_HOME` temporal. Son contrato
 | R4 | Concurrencia SQLite (agentes escribiendo, consola leyendo) | WAL + `busy_timeout`; la consola solo escribe sus tablas; lecturas cortas |
 | R5 | Coste y duración de auditorías largas | Tokens visibles por job; límite global de ejecuciones; cancelación |
 | R6 | El ZIP puede ser muy grande (copias de trabajo y OCR) | Construcción en segundo plano con ZIP64 y progreso; retención configurable. Si molesta, opción futura "solo entregables" |
-| R7 | `--source` podría no aceptar un valor libre | Verificar en H2; si no, se usa el valor por defecto y se filtra por `session_id` |
+| R7 | `--source` podría no aceptar un valor libre | Resuelto en H2: `--source` acepta cualquier valor (`hermes_cli/main.py` lo pone en `HERMES_SESSION_SOURCE`); la consola usa `ghost-recon-console` |
+| R8 | Con `KillMode=control-group` (el valor por defecto de systemd), reiniciar el servicio mata las auditorías en curso | La unidad de la consola usa `KillMode=process` (H4 lo fija en el instalador; documentado en `COMMANDS.md` §3b) |
+| R9 | `max_concurrent_sessions` en `config.yaml` puede rechazar una ejecución | El runner la marca `failed` con el motivo en el log técnico; documentado en `COMMANDS.md` §3b |

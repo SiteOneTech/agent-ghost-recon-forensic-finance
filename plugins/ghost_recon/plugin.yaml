@@ -68,4 +68,4 @@ config_schema:
   console:
     type: dict
     default: {}
-    description: "Consola web (hermes ghostrecon serve): host, port, session_idle_hours, session_max_days, allowed_hosts. Ver ghost-recon/COMMANDS.md §3b."
+    description: "Consola web (hermes ghostrecon serve): host, port, session_idle_hours, session_max_days, allowed_hosts, case_roots (carpetas de evidencia visibles; obligatoria para lanzar), max_parallel_jobs (por defecto 2), dashboard_url (enlace «Continuar en chat»). Ver ghost-recon/COMMANDS.md §3b."

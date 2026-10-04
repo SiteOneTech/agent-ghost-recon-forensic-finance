@@ -3,6 +3,9 @@
 
     python ghost-recon/demo/console_demo.py [--port 9230]
 
+Run it with the Hermes runtime / test venv Python (the job runner needs psutil), e.g.
+.venv/Scripts/python.exe on Windows dev; the system Python returns 500 on launch.
+
 Copies demo/demo-case twice into a temporary case root (``case_roots``): "Acme Importaciones" gets a sealed A01 (md
 pack, findings, a criterion) and an open A02; "Logística Norte" stays unaudited for the "+ Nueva auditoría" wizard.
 Creates the admin ``demo`` / ``demo-pass-123`` and the viewer ``visor`` / ``visor-pass-123`` and serves the console on
