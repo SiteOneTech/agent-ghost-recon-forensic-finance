@@ -155,5 +155,5 @@ def test_only_plain_names_inside_the_exports_folder_are_served(cstore, store, se
     service = ExportService(cstore, store, settings, exports_dir=exports_dir)
     served = lambda name: service.file_path({"status": "succeeded", "file_name": name})
     assert served("ok.zip") == exports_dir / "ok.zip"
-    for bad in ("../secret.zip", "..\secret.zip", str(tmp_path / "secret.zip"), "..", "."):
+    for bad in ("../secret.zip", "..\\secret.zip", str(tmp_path / "secret.zip"), "..", "."):
         assert served(bad) is None
