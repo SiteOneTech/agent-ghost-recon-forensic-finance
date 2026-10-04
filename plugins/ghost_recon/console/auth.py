@@ -10,6 +10,7 @@ import hashlib
 import hmac
 import re
 import secrets
+import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Callable, Dict, List, Optional, Tuple
@@ -73,9 +74,25 @@ def _equalising_hash() -> str:
     return _dummy_hash
 
 
+class AccountError(ValueError):
+    """An account rule the caller can fix; ``status`` and ``code`` map it to the API error envelope."""
+    status = 422
+    code = "invalid_argument"
+
+
+class UnknownUser(AccountError):
+    status = 404
+    code = "not_found"
+
+
+class AccountConflict(AccountError):
+    status = 409
+    code = "conflict"
+
+
 def _check_password(password: str) -> None:
     if len(password or "") < MIN_PASSWORD:
-        raise ValueError(f"la contraseña debe tener al menos {MIN_PASSWORD} caracteres")
+        raise AccountError(f"la contraseña debe tener al menos {MIN_PASSWORD} caracteres")
 
 
 @dataclass(frozen=True)
@@ -108,16 +125,20 @@ class AuthService:
         self.clock = clock
         self._failures: Dict[str, List[datetime]] = {}
         self._locked_until: Dict[str, datetime] = {}
+        self._last_admin_lock = threading.Lock()  # protects last-admin checks from concurrent demote/disable
 
     # ------------------------------------------------------------------ accounts
     def add_user(self, username: str, password: str, role: str) -> Dict:
         username = (username or "").strip().lower()
         if not USERNAME_RE.match(username):
-            raise ValueError("usuario: 2-32 caracteres en minúscula (a-z, 0-9, punto, guion o guion bajo)")
+            raise AccountError("usuario: 2-32 caracteres en minúscula (a-z, 0-9, punto, guion o guion bajo)")
         if role not in ROLES:
-            raise ValueError(f"rol debe ser uno de {ROLES}")
+            raise AccountError(f"rol debe ser uno de {ROLES}")
         _check_password(password)
-        return self.cstore.create_user(username, hash_password(password), role)
+        try:
+            return self.cstore.create_user(username, hash_password(password), role)
+        except ValueError as exc:  # UNIQUE(username)
+            raise AccountConflict(str(exc)) from exc
 
     def set_password(self, username: str, password: str) -> None:
         _check_password(password)
@@ -127,16 +148,30 @@ class AuthService:
 
     def set_disabled(self, username: str, disabled: bool) -> None:
         user = self._require_user(username)
-        if disabled and user["role"] == "admin" and not user["disabled"] and self.cstore.count_active_admins() <= 1:
-            raise ValueError("no se puede deshabilitar el último admin activo")
-        self.cstore.update_user(user["username"], disabled=1 if disabled else 0)
+        with self._last_admin_lock:
+            if disabled and self._is_last_active_admin(user):
+                raise AccountConflict("no se puede deshabilitar el último admin activo")
+            self.cstore.update_user(user["username"], disabled=1 if disabled else 0)
         if disabled:
             self.cstore.revoke_user_sessions(user["id"])
+
+    def set_role(self, username: str, role: str) -> None:
+        """Change a user's role; the last active admin cannot be demoted (nobody could administer the console)."""
+        if role not in ROLES:
+            raise AccountError(f"rol debe ser uno de {ROLES}")
+        user = self._require_user(username)
+        with self._last_admin_lock:
+            if role != "admin" and self._is_last_active_admin(user):
+                raise AccountConflict("no se puede quitar el rol admin al último admin activo")
+            self.cstore.update_user(user["username"], role=role)
+
+    def _is_last_active_admin(self, user: Dict) -> bool:
+        return user["role"] == "admin" and not user["disabled"] and self.cstore.count_active_admins() <= 1
 
     def _require_user(self, username: str) -> Dict:
         user = self.cstore.get_user((username or "").strip().lower())
         if not user:
-            raise ValueError(f"usuario no encontrado: {username}")
+            raise UnknownUser(f"usuario no encontrado: {username}")
         return user
 
     # ------------------------------------------------------------------ login and sessions
@@ -196,16 +231,20 @@ class AuthService:
         self.cstore.log("logout", user_id=principal.user_id, username=principal.username, ip=ip)
 
     # ------------------------------------------------------------------ API tokens
-    def create_api_token(self, username: str, name: str) -> Tuple[str, Dict]:
+    def create_api_token(self, username: str, name: str, *, actor: Optional[Principal] = None,
+                         ip: str = "") -> Tuple[str, Dict]:
+        """Create a Bearer token; the raw value is returned once. ``actor`` is who acts (an admin in the console);
+        the CLI omits it and the owner is recorded, as before."""
         user = self._require_user(username)
         if user["disabled"]:
-            raise ValueError("el usuario está deshabilitado")
+            raise AccountConflict("el usuario está deshabilitado")
         label = (name or "").strip()[:80] or "token"
         prefix = secrets.token_hex(4)
         raw = f"{TOKEN_PREFIX}_{prefix}_{secrets.token_urlsafe(32)}"
         token_id = self.cstore.create_token(user_id=user["id"], name=label, token_sha256=_sha(raw), prefix=prefix)
-        self.cstore.log("token_create", user_id=user["id"], username=user["username"], target=str(token_id),
-                        detail={"name": label})
+        self.cstore.log("token_create", user_id=actor.user_id if actor else user["id"],
+                        username=actor.username if actor else user["username"], ip=ip or None, target=str(token_id),
+                        detail={"name": label, "user": user["username"]})
         return raw, {"id": token_id, "prefix": prefix, "name": label}
 
     def resolve_bearer(self, raw: str) -> Optional[Principal]:
@@ -219,8 +258,9 @@ class AuthService:
             self.cstore.touch_token(t["id"], _iso(now))
         return Principal(t["user_id"], t["username"], t["role"], "token")
 
-    def revoke_api_token(self, token_id: int) -> bool:
+    def revoke_api_token(self, token_id: int, *, actor: Optional[Principal] = None, ip: str = "") -> bool:
         revoked = self.cstore.revoke_token(token_id)
         if revoked:
-            self.cstore.log("token_revoke", target=str(token_id))
+            self.cstore.log("token_revoke", user_id=actor.user_id if actor else None,
+                            username=actor.username if actor else None, ip=ip or None, target=str(token_id))
         return revoked

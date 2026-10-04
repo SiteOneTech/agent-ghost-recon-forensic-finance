@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import mimetypes
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
 
@@ -17,7 +18,9 @@ from ..core.db import Store
 from . import CONSOLE_VERSION
 from .auth import AuthService
 from .deps import ConsoleContext, current_principal
-from .routers import audits as audits_routes, auth as auth_routes, cases as cases_routes, system as system_routes
+from .jobs import JobService
+from .routers import (audits as audits_routes, auth as auth_routes, cases as cases_routes, fs as fs_routes,
+                      jobs as jobs_routes, system as system_routes, users as users_routes)
 from .settings import ConsoleSettings
 from .store import ConsoleStore
 
@@ -35,7 +38,7 @@ SECURITY_HEADERS = {
     "X-Frame-Options": "DENY",
     "Cross-Origin-Opener-Policy": "same-origin",
 }
-ROUTERS = (auth_routes, system_routes, cases_routes, audits_routes)
+ROUTERS = (auth_routes, system_routes, cases_routes, audits_routes, fs_routes, jobs_routes, users_routes)
 
 
 def host_allowed(host_header: str, settings: ConsoleSettings) -> bool:
@@ -49,10 +52,21 @@ def host_allowed(host_header: str, settings: ConsoleSettings) -> bool:
 
 
 def create_app(settings: ConsoleSettings, store: Store, cstore: ConsoleStore, *,
-               auth: Optional[AuthService] = None) -> FastAPI:
-    app = FastAPI(title="Ghost Recon Console", version=CONSOLE_VERSION, docs_url=None, redoc_url=None, openapi_url=None)
+               auth: Optional[AuthService] = None, jobs: Optional[JobService] = None) -> FastAPI:
+    jobs = jobs or JobService(cstore, store, settings)
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        jobs.start()  # find running jobs again, mark orphans, dispatch the queue; then tick in the background
+        try:
+            yield
+        finally:
+            jobs.stop()
+
+    app = FastAPI(title="Ghost Recon Console", version=CONSOLE_VERSION, docs_url=None, redoc_url=None,
+                  openapi_url=None, lifespan=lifespan)
     app.state.gr = ConsoleContext(settings=settings, store=store, cstore=cstore,
-                                  auth=auth or AuthService(cstore, settings))
+                                  auth=auth or AuthService(cstore, settings), jobs=jobs)
 
     @app.middleware("http")
     async def guard(request: Request, call_next):

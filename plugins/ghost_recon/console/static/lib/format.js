@@ -91,3 +91,33 @@ export function shortHash(sha) {
 export function safeHref(url) {
   return /^https?:\/\//i.test(String(url || "")) ? String(url) : null;
 }
+
+export const COMMAND_LABEL = { "new-open-case": "Nueva auditoría", "rerun-case": "Re-run", "review-case": "Review" };
+const JOB_STATUS = {
+  queued: ["en cola", "info"],
+  running: ["en curso", "info"],
+  succeeded: ["terminada", "ok"],
+  failed: ["fallida", "risk-high"],
+  cancelled: ["cancelada", "muted"],
+  orphaned: ["interrumpida", "risk-medium"],
+};
+export const JOB_STATUS_OPTIONS = Object.entries(JOB_STATUS).map(([value, [text]]) => [value, text]);
+
+export function jobChip(status) {
+  const [text, variant] = JOB_STATUS[status] || [status, "muted"];
+  return chip(text, variant, status === "orphaned" ? "El proceso de la ejecución se detuvo sin registrar su final." : undefined);
+}
+
+export function fmtDuration(seconds) {
+  if (seconds === null || seconds === undefined || Number.isNaN(Number(seconds))) return "—";
+  const total = Math.max(0, Math.round(Number(seconds)));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  if (hours) return `${hours} h ${minutes} min`;
+  return minutes ? `${minutes} min ${total % 60} s` : `${total % 60} s`;
+}
+
+export function secondsSince(iso) {
+  const start = parse(iso || "");
+  return start ? (Date.now() - start.getTime()) / 1000 : null;
+}

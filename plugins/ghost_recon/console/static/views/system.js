@@ -6,7 +6,8 @@ import { dataTable } from "./components.js";
 export async function render({ user }) {
   const doc = await api("/system/doctor");
   const parts = [
-    h("h1", {}, "Sistema"),
+    h("div", { class: "page-head" }, h("h1", {}, "Sistema"),
+      user.role === "admin" ? h("a", { class: "btn ghost", href: "#/system/users" }, "Usuarios y tokens") : null),
     h("p", { class: "muted" }, `Consola ${doc.console.version} · ${doc.console.host}:${doc.console.port}`),
     h("section", { class: "card" }, h("h2", {}, doc.ok ? "Diagnóstico: todo en orden" : "Diagnóstico: requiere atención"),
       dataTable([

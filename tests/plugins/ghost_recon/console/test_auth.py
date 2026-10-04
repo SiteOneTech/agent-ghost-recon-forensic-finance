@@ -1,9 +1,11 @@
 """AuthService contracts: password hashing, account rules, session expiry, lockout, API tokens."""
+import threading
 from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from plugins.ghost_recon.console.auth import AuthError, AuthService, LoginLocked, hash_password, verify_password
+from plugins.ghost_recon.console.auth import (AccountConflict, AuthError, AuthService, LoginLocked, hash_password,
+                                              verify_password)
 from plugins.ghost_recon.console.settings import ConsoleSettings
 
 
@@ -145,3 +147,68 @@ def test_session_timestamps_come_from_injected_clock():
     raw2, _ = svc.login("distant", "password-far-away-12")
     clock.advance(hours=13)
     assert svc.resolve_session(raw2) is None, "session must expire after 13 hours of idle (> 12h limit)"
+
+
+def test_the_last_active_admin_keeps_the_role_and_stays_enabled(svc):
+    with pytest.raises(AccountConflict):
+        svc.set_role("jean", "viewer")
+    with pytest.raises(AccountConflict):
+        svc.set_disabled("jean", True)
+    svc.add_user("ana", "admin-pass-456", "admin")
+    svc.set_role("jean", "viewer")
+    assert svc.cstore.get_user("jean")["role"] == "viewer"
+
+
+def test_two_admins_acting_on_each_other_at_once_keep_one_active_admin(svc, monkeypatch):
+    """Prove the last-admin lock prevents concurrent demote/disable race by forcing interleaving.
+
+    With exactly two active admins (jean and ana), if they act on each other simultaneously:
+    - Without lock: both call count_active_admins inside check, both see 2, barrier releases, both writes succeed → zero admins
+    - With lock: first thread holds lock while its barrier.wait times out, then writes and releases; second then counts 1 and gets conflict
+
+    This test deterministically forces interleaving with a Barrier that times out under the lock.
+    """
+    svc.add_user("ana", "admin-pass-456", "admin")
+    assert svc.cstore.count_active_admins() == 2
+
+    # Monkeypatch count_active_admins to signal when both threads have entered
+    original_count = svc.cstore.count_active_admins
+    both_counted = threading.Barrier(2, timeout=2)
+
+    def paused_count():
+        n = original_count()
+        try:
+            both_counted.wait()  # Without lock both threads meet here; with lock, second thread is blocked outside so barrier times out
+        except threading.BrokenBarrierError:
+            pass  # Lock held by first thread prevents second from entering; barrier times out
+        return n
+
+    monkeypatch.setattr(svc.cstore, "count_active_admins", paused_count)
+
+    results = {}
+
+    def disable_ana():
+        try:
+            svc.set_disabled("ana", True)
+            results["disable_ana"] = "ok"
+        except AccountConflict:
+            results["disable_ana"] = "conflict"
+
+    def demote_jean():
+        try:
+            svc.set_role("jean", "viewer")
+            results["demote_jean"] = "ok"
+        except AccountConflict:
+            results["demote_jean"] = "conflict"
+
+    t1 = threading.Thread(target=disable_ana)
+    t2 = threading.Thread(target=demote_jean)
+    t1.start()
+    t2.start()
+    t1.join(timeout=10)
+    t2.join(timeout=10)
+
+    # With the lock, exactly one succeeds and one fails
+    assert sorted(results.values()) == ["conflict", "ok"], f"Expected one success and one failure, got: {results}"
+    # Verify that exactly one active admin remains
+    assert original_count() == 1, f"Expected one active admin, got {original_count()}"

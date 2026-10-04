@@ -1,14 +1,16 @@
 import { api } from "../lib/api.js";
 import { h } from "../lib/dom.js";
 import { fmtDate, riskChips, sealChip } from "../lib/format.js";
-import { emptyState, errorState, kpi } from "./components.js";
+import { errorState, kpi } from "./components.js";
 import * as audits from "./case/audits.js";
 import * as criteria from "./case/criteria.js";
 import * as evidence from "./case/evidence.js";
 import * as findings from "./case/findings.js";
+import * as jobs from "./case/jobs.js";
 import * as research from "./case/research.js";
 import * as summary from "./case/summary.js";
 import * as timeline from "./case/timeline.js";
+import { openLaunchDialog } from "./launch.js";
 
 const TABS = [
   { id: "summary", label: "Resumen", view: summary },
@@ -18,7 +20,7 @@ const TABS = [
   { id: "criteria", label: "Criterios", view: criteria },
   { id: "research", label: "Investigación", view: research },
   { id: "timeline", label: "Cronología", view: timeline },
-  { id: "jobs", label: "Ejecuciones", view: null },
+  { id: "jobs", label: "Ejecuciones", view: jobs },
 ];
 
 function rerender() {
@@ -54,6 +56,13 @@ function duplicates(stats) {
   return Object.entries(stats || {}).filter(([k]) => k.startsWith("DUP")).reduce((sum, [, v]) => sum + v, 0);
 }
 
+function launchButton(text, command, theCase, user, blocked) {
+  const reason = user.role !== "admin" ? "Solo los administradores lanzan ejecuciones." : blocked;
+  const button = h("button", { class: "btn", type: "button", disabled: Boolean(reason), title: reason || null }, text);
+  button.addEventListener("click", () => openLaunchDialog({ command, folder: theCase.root_path, title: theCase.name }));
+  return button;
+}
+
 export async function render({ params, user }) {
   const [caseId, tabId = "summary"] = params;
   const detail = await api(`/cases/${encodeURIComponent(caseId)}`);
@@ -69,24 +78,22 @@ export async function render({ params, user }) {
       h("div", {}, h("h1", {}, c.name),
         h("p", { class: "muted mono" }, `${c.id} · ${c.base_currency} · ${c.language} · ${c.root_path}`)),
       h("div", { class: "actions" },
-        h("button", { class: "btn", disabled: true, title: "Disponible en H2" }, "▶ Re-run"),
-        h("button", { class: "btn", disabled: true, title: "Disponible en H2" }, "▶ Review"),
+        launchButton("▶ Re-run", "rerun-case", c, user, null),
+        launchButton("▶ Review", "review-case", c, user, s.sealed_count === 0 ? "La revisión necesita una auditoría sellada." : null),
         verify,
-        h("button", { class: "btn ghost", disabled: true, title: "Disponible en H3" }, "Exportar resultados (.zip)"))),
+        h("button", { class: "btn ghost", disabled: true, title: "Próximamente" }, "Exportar resultados (.zip)"))),
     notice,
     h("section", { class: "kpis" },
       kpi(s.audits_count, "Auditorías", sealChip(s.seal_state)),
       kpi(s.open_total, "Hallazgos abiertos", riskChips(s.open_by_risk)),
       kpi(detail.evidence.total || 0, "Evidencia", `${duplicates(detail.evidence)} duplicados`),
       kpi(fmtDate(s.last_activity), "Última actividad")),
-    h("nav", { class: "tabs", "aria-label": "Secciones del caso" }, TABS.map((t) => (t.view
-      ? h("a", { class: t.id === tab.id ? "tab active" : "tab", href: `#/cases/${encodeURIComponent(c.id)}/${t.id}`,
-        "aria-current": t.id === tab.id ? "page" : null }, t.label)
-      : h("span", { class: "tab soon", title: "Disponible en H2" }, t.label)))),
+    h("nav", { class: "tabs", "aria-label": "Secciones del caso" }, TABS.map((t) =>
+      h("a", { class: t.id === tab.id ? "tab active" : "tab", href: `#/cases/${encodeURIComponent(c.id)}/${t.id}`,
+        "aria-current": t.id === tab.id ? "page" : null }, t.label))),
     body);
   try {
-    body.replaceChildren(tab.view ? await tab.view.render({ caseId: c.id, detail, user })
-      : emptyState("Las ejecuciones del caso llegan en H2."));
+    body.replaceChildren(await tab.view.render({ caseId: c.id, detail, user }));
   } catch (err) {
     body.replaceChildren(errorState(err));
   }

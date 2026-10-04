@@ -40,6 +40,7 @@ if ($Yes) { "y`ny`ny`n" | & hermes @P plugins enable ghost-recon } else { & herm
 Say "Applying configuration…"
 & hermes @P config set web.backend tavily | Out-Null
 & hermes @P config set delegation.max_concurrent_children 10 | Out-Null
+& hermes @P config set delegation.oneshot_max_children 100 | Out-Null
 & hermes @P config set plugins.entries.ghost-recon.settings.audits_dirname GhostRecon_Audits | Out-Null
 & hermes @P config set plugins.entries.ghost-recon.settings.language es | Out-Null
 & hermes @P config set plugins.entries.ghost-recon.settings.base_currency USD | Out-Null

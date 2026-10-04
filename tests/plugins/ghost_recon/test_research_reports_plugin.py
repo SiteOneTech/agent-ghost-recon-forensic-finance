@@ -124,3 +124,17 @@ def test_register_wires_tools_commands_cli_and_prompt(gr_env):
     assert listing["cases"] == []
     assert "Ghost Recon" in ctx.commands["gr-help"]("")
     assert "doctor" in ctx.commands["gr-doctor"]("").lower()
+
+
+@pytest.mark.parametrize("deleg, ok", [({}, False), ({"oneshot_max_children": 2}, False),
+                                       ({"oneshot_max_children": 100}, True), ({"oneshot_max_children": 0}, True)])
+def test_doctor_requires_a_generous_oneshot_delegation_budget(monkeypatch, deleg, ok):
+    """Console jobs are one-shot `chat -q` runs; Hermes' default budget of 2 starves the swarm and A/B/C validation."""
+    import hermes_cli.config as hcfg
+    from plugins.ghost_recon import commands
+
+    monkeypatch.setattr(hcfg, "load_config", lambda: {"delegation": deleg})
+    check = next(c for c in commands.doctor_report()["checks"] if c["check"] == "delegation.oneshot_max_children")
+    assert check["ok"] is ok
+    if not ok:
+        assert "delegation.oneshot_max_children" in check["detail"] and "100" in check["detail"]

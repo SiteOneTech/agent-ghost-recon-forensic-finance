@@ -1,7 +1,7 @@
 import { api } from "../lib/api.js";
 import { h } from "../lib/dom.js";
 
-export async function render({ onLogin }) {
+export async function render({ onLogin, notice }) {
   const user = h("input", { id: "login-user", name: "username", autocomplete: "username", required: true, autofocus: true });
   const pass = h("input", { id: "login-pass", name: "password", type: "password", autocomplete: "current-password", required: true });
   const msg = h("p", { class: "login-msg", role: "alert" });
@@ -23,6 +23,7 @@ export async function render({ onLogin }) {
   },
   h("span", { class: "brand", "aria-label": "Ghost Recon" }),
   h("h1", {}, "Consola"),
+  notice ? h("p", { class: "notice", role: "status" }, notice) : null,
   h("label", { for: "login-user" }, "Usuario"), user,
   h("label", { for: "login-pass" }, "Contraseña"), pass,
   msg, submit);

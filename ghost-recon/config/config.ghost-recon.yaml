@@ -17,6 +17,7 @@ web:
   backend: tavily          # web_search / web_extract use Tavily (TAVILY_API_KEY in .env)
 delegation:
   max_concurrent_children: 10   # swarm waves are sized by swarm_max_parallel (<= this)
+  oneshot_max_children: 100     # console jobs are one-shot `chat -q` runs; Hermes' default 2 starves the swarm and A/B/C validation
   max_summary_chars: 24000
 # Optional: Tavily MCP server (research/crawl/map tools) — needs node/npx
 # mcp_servers:
