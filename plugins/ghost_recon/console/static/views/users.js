@@ -15,7 +15,7 @@ function problem(text) {
   return h("div", { class: "error", role: "alert" }, text);
 }
 
-export async function render({ user }) {
+export async function render({ user, signedOut }) {
   const title = h("div", { class: "page-head" }, h("h1", {}, "Usuarios y tokens"), h("a", { class: "btn ghost", href: "#/system" }, "← Sistema"));
   if (user.role !== "admin") {
     return h("div", { class: "page" }, title, emptyState("Solo los administradores gestionan usuarios y tokens."));
@@ -44,6 +44,11 @@ export async function render({ user }) {
       try {
         await api(`/users/${encodeURIComponent(username)}/password`, { method: "POST", body: { password: pass.value, password_confirm: again.value } });
         dialog.close();
+        if (username === user.username) {
+          // The server revoked every session of the account, this one included.
+          signedOut("Contraseña cambiada. Vuelve a iniciar sesión.");
+          return;
+        }
         await reload();
       } catch (err) {
         mount(error, problem(err.message));

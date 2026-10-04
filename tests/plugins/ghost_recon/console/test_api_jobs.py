@@ -236,3 +236,24 @@ def test_stream_after_parameter_and_non_ascii_last_event_id(login_as, case_root,
     everything, _ = _read_stream(c, job["id"])
     assert _read_stream(c, job["id"], params={"after": everything[1]})[0] == everything[2:]
     assert _read_stream(c, job["id"], headers={"Last-Event-ID": "\u00b2".encode("latin-1")})[0] == everything  # not a 500
+
+
+SECRET = "sk-proj-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789"
+
+
+def test_secrets_in_logs_errors_and_events_never_reach_viewers(login_as, cstore, case_root, jobs):  # spec §9
+    from plugins.ghost_recon.console import jobfiles
+    job = cstore.create_job(command="new-open-case", folder=str(_folder(case_root, "Caso Secreto")), args={},
+                            argv=["hermes"], launched_by="jean")
+    cstore.update_job(job["id"], status="failed", error=f"401 con la clave {SECRET}", result_text=f"usé {SECRET}")
+    jobfiles.log_path(jobs.jobs_dir, job["id"]).write_text(f"OPENAI_API_KEY={SECRET}\n", encoding="utf-8")
+    jobfiles.runner_log_path(jobs.jobs_dir, job["id"]).write_text(f"fallo con {SECRET}\n", encoding="utf-8")
+    jobfiles.append_events(jobfiles.events_path(jobs.jobs_dir, job["id"]), [
+        {"seq": 1, "ts": "", "kind": "warning", "phase": None, "title": "terminal falló",
+         "detail": f"curl -H 'Authorization: Bearer {SECRET}'", "level": "warning"}])
+    c = login_as("viewer")
+    log = c.get(f"/api/v1/jobs/{job['id']}/log").json()
+    seen = [c.get(f"/api/v1/jobs/{job['id']}").text, c.get(f"/api/v1/jobs/{job['id']}/events").text,
+            json.dumps(log), _read_stream(c, job["id"])[1]]
+    assert all(SECRET not in text for text in seen)
+    assert "OPENAI_API_KEY=" in log["log"]  # the line stays readable, only the value is masked

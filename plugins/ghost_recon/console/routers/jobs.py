@@ -48,10 +48,23 @@ def _job_or_404(ctx: ConsoleContext, job_id: int) -> dict:
     return job
 
 
+def _redacted(text):
+    """Spec §9: the console never shows secret values. Log tails, job errors, the agent's final text and event details
+    pass through Hermes' redactor before any viewer sees them (forced: this is a display boundary, whatever
+    ``security.redact_secrets`` says)."""
+    from agent.redact import redact_sensitive_text
+    return redact_sensitive_text(text, force=True) if text else text
+
+
+def _event(event: dict) -> dict:
+    return {**event, "detail": _redacted(event.get("detail"))}
+
+
 def _view(ctx: ConsoleContext, job: dict) -> dict:
     view = readmodel.job_view(ctx.store, ctx.cstore, job, profile_args=procs.profile_args(),
                               dashboard_url=ctx.settings.dashboard_url)
     view["display"] = commands.display_command(view["argv"]) if view["argv"] else ""
+    view["error"], view["result_text"] = _redacted(view["error"]), _redacted(view["result_text"])
     return view
 
 
@@ -119,7 +132,7 @@ def job_events(job_id: int, after: int = Query(0, ge=0), _: Principal = Depends(
                ctx: ConsoleContext = Depends(get_ctx)):
     _job_or_404(ctx, job_id)
     items, _offset = jobfiles.read_events(jobfiles.events_path(ctx.jobs.jobs_dir, job_id), after=after)
-    return {"items": items, "last_seq": items[-1]["seq"] if items else after}
+    return {"items": [_event(e) for e in items], "last_seq": items[-1]["seq"] if items else after}
 
 
 @router.get("/jobs/{job_id}/events/stream")
@@ -143,7 +156,7 @@ async def job_stream(job_id: int, request: Request, after: int = Query(0, ge=0),
             items, offset = jobfiles.read_events(path, after=seq, offset=offset)
             for event in items:
                 seq = event["seq"]
-                yield f"id: {seq}\nevent: event\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
+                yield f"id: {seq}\nevent: event\ndata: {json.dumps(_event(event), ensure_ascii=False)}\n\n"
             state = {key: job.get(key) for key in _STATUS_KEYS}
             if state != sent:
                 sent = state
@@ -164,5 +177,5 @@ async def job_stream(job_id: int, request: Request, after: int = Query(0, ge=0),
 def job_log(job_id: int, _: Principal = Depends(require("viewer")), ctx: ConsoleContext = Depends(get_ctx)):
     _job_or_404(ctx, job_id)
     base = ctx.jobs.jobs_dir
-    return {"log": jobfiles.tail(jobfiles.log_path(base, job_id)),
-            "runner_log": jobfiles.tail(jobfiles.runner_log_path(base, job_id), lines=50)}
+    return {"log": _redacted(jobfiles.tail(jobfiles.log_path(base, job_id))),
+            "runner_log": _redacted(jobfiles.tail(jobfiles.runner_log_path(base, job_id), lines=50))}

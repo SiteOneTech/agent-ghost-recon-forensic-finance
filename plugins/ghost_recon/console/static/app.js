@@ -12,7 +12,7 @@ import * as system from "./views/system.js";
 import * as users from "./views/users.js";
 import * as wizard from "./views/wizard.js";
 
-const state = { user: null };
+const state = { user: null, notice: null };
 let leaving = [];
 let generation = 0;
 
@@ -62,6 +62,15 @@ async function ensureSession() {
   }
 }
 
+/** The session is over (logout, or the server revoked it): forget it and show the login view, with an optional
+ *  message for it. */
+function signedOut(notice) {
+  state.user = null;
+  state.notice = notice || null;
+  setCsrf(null);
+  window.location.hash = "#/login";
+}
+
 async function logout() {
   try {
     await api("/auth/logout", { method: "POST" });
@@ -73,9 +82,7 @@ async function logout() {
       return;
     }
   }
-  state.user = null;
-  setCsrf(null);
-  window.location.hash = "#/login";
+  signedOut();
 }
 
 function shell(navId) {
@@ -112,7 +119,9 @@ async function render() {
   const app = document.getElementById("app");
   app.classList.remove("boot");
   if (route.public) {
-    const page = await route.view.render({ params, onLogin });
+    const notice = state.notice;
+    state.notice = null;
+    const page = await route.view.render({ params, onLogin, notice });
     if (current()) mount(app, page);
     return;
   }
@@ -127,7 +136,7 @@ async function render() {
   mount(main, h("p", { class: "muted" }, "Cargando…"));
   let page;
   try {
-    page = await route.view.render({ params, user: state.user, onLeave: onLeaveFor(token) });
+    page = await route.view.render({ params, user: state.user, onLeave: onLeaveFor(token), signedOut });
   } catch (err) {
     page = errorState(err);
   }
