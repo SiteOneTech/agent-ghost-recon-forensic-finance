@@ -61,6 +61,7 @@ python ghost-recon/demo/smoke_test.py          # abre caso demo, auditoría, pac
 ## 4. Qué falta probar en la máquina real (requiere API keys)
 
 1. `bash ghost-recon/install.sh` (o `install.ps1`) → `hermes plugins list` muestra `ghost-recon` enabled; `hermes skills list` muestra la categoría `ghost-recon`.
+   - Requisito para la consola: `delegation.oneshot_max_children: 100` (lo fijan los instaladores; sin él los `chat -q` no pueden sellar, ver R10 de la spec).
 2. `hermes` → `/gr-doctor` → todo OK (BD, fuentes, openpyxl, reportlab, TAVILY_API_KEY).
 3. `/new-open-case ghost-recon/demo/demo-case` → debe terminar con el pack en `GhostRecon_Audits/A01_<fecha>/06_Report/` y `SEALED.json`.
 4. `/rerun-case ghost-recon/demo/demo-case` tras añadir un archivo nuevo a `evidence/` → `A02_<fecha>` nueva, `A01` intacta (`gr_case_status` → `seal_ok: true`).

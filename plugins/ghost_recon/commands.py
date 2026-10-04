@@ -103,6 +103,13 @@ def doctor_report() -> Dict[str, Any]:
         add("web.backend", True, f"{web.get('backend') or web.get('search_backend') or 'auto'} (recomendado: tavily)")
         deleg = cfg.get("delegation") or {}
         add("delegation.max_concurrent_children", True, str(deleg.get("max_concurrent_children", 10)))
+        try:
+            oneshot = int(deleg.get("oneshot_max_children", 2))  # Hermes default when unset
+        except (TypeError, ValueError):
+            oneshot = 2
+        add("delegation.oneshot_max_children", oneshot == 0 or oneshot >= 20,
+            f"{oneshot} — la consola lanza auditorías con `chat -q` (una sola vez) y el valor por defecto de Hermes (2) "
+            "deja sin enjambre ni validación A/B/C; fije delegation.oneshot_max_children: 100")
     except Exception:
         add("config", True, "config no inspeccionada (fuera de Hermes)")
     return {"ok": all(c["ok"] for c in checks if c["check"] not in ("pdftotext",)), "checks": checks,

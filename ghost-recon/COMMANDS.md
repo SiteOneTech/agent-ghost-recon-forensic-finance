@@ -76,6 +76,7 @@ hermes ghostrecon token list | token revoke <id>
   - la vista en vivo (SSE) lee la fila de la ejecución antes que los eventos y termina solo cuando una fila ya terminal va seguida de una lectura vacía, así que no se pierde ningún evento final;
   - «Continuar en terminal» copia `hermes -p <perfil> --resume <session_id>`; con `dashboard_url`, «Continuar en chat» abre la sesión en el dashboard;
   - archivos de cada ejecución en `<plugin-data>/ghost-recon/console/jobs/`: `<id>.jsonl` (salida del agente), `<id>.log` (errores del agente), `<id>.events.jsonl` (actividad), `<id>.runner.log` y `<id>/` (directorio de trabajo del agente).
+- Presupuesto de delegación: la consola requiere `delegation.oneshot_max_children: 100` en `config.yaml`; cada ejecución es una sesión de un solo disparo (`chat -q`) y Hermes limita el total de sub-agentes de esas sesiones a 2 por defecto, lo que deja sin enjambre ni validación A/B/C (el agente se niega a sellar). Lo fijan `config.ghost-recon.yaml` y los instaladores; `/gr-doctor` lo comprueba.
 - API: `/api/v1/…`; el esquema está en `/api/v1/openapi.json`, tras el login.
 - Configuración: `plugins.entries.ghost-recon.settings.console` en `config.yaml` (la consola no la edita):
 

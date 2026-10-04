@@ -155,7 +155,7 @@ Leyenda: `[ ]` pendiente · `[~]` en curso · `[x]` hecho · `[!]` bloqueado (ve
 ### Fase 8 — Consola web (spec `ghost-recon/specs/2026-10-02-ghost-recon-console-design.md`)
 - [x] H1 · Base: `hermes ghostrecon serve|user|token`, login/roles/tokens, API de lectura, verificación de sellos cacheada, descargas contenidas, frontend (Inicio, Casos, Caso con 7 pestañas, Sistema), demo `console_demo.py`
 - [x] H2 · Ejecuciones: navegador de carpetas (`case_roots`), asistente Nueva auditoría con notas de contexto, Re-run/Review desde el caso, motor de jobs desacoplado (límites, cola, cancelación del árbol, huérfanos, supervivencia al reinicio), vista en vivo (SSE), lista de Ejecuciones, Usuarios y tokens en Sistema, migraciones versionadas de `console_*`, UI sin nombres de hito
-  - [ ] R1 verificado en la máquina dedicada (plan H2, Tarea 12, Step 8)
+  - [x] R1 verificado en la máquina dedicada 2026-10-04: la skill completa corre vía -q; el sello requiere oneshot_max_children ≥ validación A/B/C — ver R10 (plan H2, Tarea 12, Step 8)
 - [ ] H3 · Exportación `.zip` verificable, tablas CSV/XLSX, búsqueda entre casos, avisos, verificación de hash al descargar entregables de auditorías selladas (409 `hash_mismatch`, registro de descargas denegadas)
   - Pendientes de la revisión final de H1 que no entraron en H2:
     - lock en la contabilidad del bloqueo de login

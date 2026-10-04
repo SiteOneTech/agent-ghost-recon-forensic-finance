@@ -71,6 +71,7 @@ fi
 say "Applying configuration…"
 "${HERMES[@]}" config set web.backend tavily >/dev/null || warn "could not set web.backend"
 "${HERMES[@]}" config set delegation.max_concurrent_children 10 >/dev/null || true
+"${HERMES[@]}" config set delegation.oneshot_max_children 100 >/dev/null || true
 "${HERMES[@]}" config set plugins.entries.ghost-recon.settings.audits_dirname GhostRecon_Audits >/dev/null || true
 "${HERMES[@]}" config set plugins.entries.ghost-recon.settings.language es >/dev/null || true
 "${HERMES[@]}" config set plugins.entries.ghost-recon.settings.base_currency USD >/dev/null || true
