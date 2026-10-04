@@ -138,3 +138,37 @@ def test_reading_the_context_file_marks_the_intake_phase():
         assert phase_for("read_file", {"path": path}) == "intake"
     assert phase_for("read_file", {"path": "/x/Bancos/a.txt"}) is None
     assert phase_for("delegate_task", {}, "swarm") == "swarm" and phase_for("terminal", {}) is None
+
+
+def test_malformed_field_values_never_raise():  # Finding 1: guard against exceptions
+    n = Normalizer()
+    # result with non-numeric exit_code
+    events1 = n.feed_line(json.dumps(rec("result", 0, session_id="s", exit_code="abc", text="")))
+    assert len(events1) == 1 and events1[0]["level"] == "warning"
+    # record with absurd timestamp (causes OverflowError in _iso)
+    events2 = n.feed_line(json.dumps(rec("result", 1, session_id="s", exit_code=0, text="", timestamp=1e20)))
+    assert len(events2) == 1 and events2[0]["level"] == "warning"
+    # tool_result for gr_audit_seal with completion as non-dict (causes AttributeError on .get("missing"))
+    events3 = n.feed_line(json.dumps(rec("tool_use", 2, name="gr_audit_seal", tool_call_id="c2", input={})))
+    events3 += n.feed_line(json.dumps(rec("tool_result", 2, name="gr_audit_seal", tool_call_id="c2",
+                                          output='{"sealed": false, "completion": ["x"]}', duration_ms=1, is_error=False)))
+    assert any(e["level"] == "warning" for e in events3)
+    # normal line afterwards is still normalized
+    events4 = n.feed_line(json.dumps(rec("result", 3, session_id="s", exit_code=0, text="ok")))
+    assert len(events4) == 1 and events4[0]["kind"] == "result" and events4[0]["level"] == "info"
+
+
+def test_truncated_gr_swarm_plan_uses_task_count_from_args_as_fallback():  # Finding 2: swarm total survives truncation
+    truncated_plan = json.dumps({"mode": "extraction", "tasks": [{}] * 5})[:5000] + "..."
+    # gr_swarm_plan with 5 tasks in args, truncated output
+    _, events = run(call("gr_swarm_plan", {"audit_id": "a", "mode": "extraction", "tasks": [{}, {}, {}, {}, {}]},
+                         truncated_plan, 1))
+    # delegate_task calls afterwards should show progress against the extracted or fallback total
+    _, events_with_delegates = run(
+        call("gr_swarm_plan", {"audit_id": "a", "mode": "extraction", "tasks": [{}, {}, {}, {}, {}]}, truncated_plan, 1)
+        + call("delegate_task", {"tasks": [{}, {}]}, "ok", 2)
+        + call("delegate_task", {"tasks": [{}]}, "ok", 3))
+    swarm_progress = [e["title"] for e in events_with_delegates if e["kind"] == "tool_result" and e["phase"] == "swarm"]
+    # should show "2/5" and "3/5", not "2/0"
+    assert any("2/5" in t for t in swarm_progress), f"Expected '2/5' in progress titles, got {swarm_progress}"
+    assert any("3/5" in t for t in swarm_progress), f"Expected '3/5' in progress titles, got {swarm_progress}"

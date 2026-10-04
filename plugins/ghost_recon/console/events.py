@@ -146,6 +146,9 @@ def _sum_criterion(n: "Normalizer", output: str, data: Dict[str, Any], args: Dic
 def _sum_plan(n: "Normalizer", output: str, data: Dict[str, Any], args: Dict[str, Any]) -> List[Event]:
     mode = str(data.get("mode") or args.get("mode") or "extraction")
     tasks = _count(data.get("tasks"))
+    # Fallback: if output was truncated and JSON didn't parse, use the task count from the input args.
+    if not tasks:
+        tasks = _count(args.get("tasks"))
     n.start_delegation(_PLAN_PHASE.get(mode), tasks or 0)
     noun, unit = _PLAN_WORDS.get(mode, (mode, "tareas"))
     return _ok(f"Plan de {noun} listo" + (f": {tasks} {unit}" if tasks else ""))
@@ -240,7 +243,14 @@ class Normalizer:
 
     def feed(self, obj: Dict[str, Any]) -> List[Event]:
         handler = self._handlers.get(str(obj.get("type")))
-        return handler(obj) if handler else []
+        if not handler:
+            return []
+        try:
+            return handler(obj)
+        except Exception as e:
+            # Any exception from handler (malformed field values, out-of-range data, etc.) becomes a warning.
+            # This keeps the stream processing alive even on odd but syntactically-valid JSON records.
+            return self._emit("warning", "Evento del agente ilegible", detail=type(e).__name__, level="warning")
 
     def flush(self) -> List[Event]:
         group, self._group = self._group, None
