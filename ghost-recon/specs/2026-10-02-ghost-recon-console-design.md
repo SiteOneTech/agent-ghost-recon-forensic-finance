@@ -152,7 +152,7 @@ caché de la última verificación de sello por auditoría.
 
 | `command` | Skill precargada | Texto `-q` | Requisitos de validación |
 |---|---|---|---|
-| `new-open-case` | `new-open-case` | `/new-open-case "<folder>" "<context_file>" [--name "…"] [--currency X] [--lang es\|en] [--out "…"]` | `folder` dentro de `case_roots`. Si la carpeta ya es un caso con una auditoría sellada, el API responde `409` con la sugerencia de usar `rerun-case` (la misma regla que la skill). |
+| `new-open-case` | `new-open-case` | `/new-open-case "<folder>" "<context_file>" [--name "…"] [--currency X] [--lang es\|en] [--out "…"]` | `folder` dentro de `case_roots`. Si la carpeta ya es un caso con una auditoría sellada, el API responde `409` con la sugerencia de usar `rerun-case` (la misma regla que la skill). La consola siempre pasa `--out` (el del operador o `<carpeta>/GhostRecon_Audits`), así que los resultados nunca caen en una ubicación improvisada por el agente. |
 | `rerun-case` | `rerun-case` | `/rerun-case "<folder>" ["<context_file>"] [--out "…"]` | `folder` es un caso conocido (BD o `case.json`). |
 | `review-case` | `review-case` | `/review-case "<folder>"`. Con notas: segunda línea `Contexto adicional del operador (declaraciones, no hechos): "<context_file>"` | El caso tiene al menos una auditoría sellada. La skill no tiene argumento de contexto, así que se le pasa como línea adicional; se verifica junto con R1. |
 
