@@ -122,8 +122,11 @@ def case_detail(store: Store, cstore: ConsoleStore, case: Dict[str, Any]) -> Dic
 
 def fold(text: Any) -> str:
     """Case- and accent-insensitive form of a text (NFKD without combining marks, casefolded): «Conciliación» and
-    «conciliacion» fold alike."""
-    decomposed = unicodedata.normalize("NFKD", str(text or ""))
+    «conciliacion» fold alike. Plain ASCII (most IDs, hashes and paths) skips the Unicode work."""
+    text = str(text or "")
+    if text.isascii():
+        return text.lower()
+    decomposed = unicodedata.normalize("NFKD", text)
     return "".join(c for c in decomposed if not unicodedata.combining(c)).casefold()
 
 

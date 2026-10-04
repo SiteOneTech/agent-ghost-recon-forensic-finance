@@ -76,9 +76,8 @@ def resolve_principal(request: Request, ctx: ConsoleContext, *, touch: bool = Tr
     return ctx.auth.resolve_session(request.cookies.get(session_cookie_name(ctx.settings), ""), touch=touch)
 
 
-def current_principal(request: Request, ctx: ConsoleContext = Depends(get_ctx)) -> Principal:
-    """Bearer token (API clients, CSRF-exempt: no cookie involved) or session cookie (browser, CSRF-checked)."""
-    principal = resolve_principal(request, ctx)
+def _authenticate(request: Request, ctx: ConsoleContext, *, touch: bool = True) -> Principal:
+    principal = resolve_principal(request, ctx, touch=touch)
     if principal is None:
         if _bearer(request) is not None:
             raise ApiError(401, "invalid_token", "token inválido o revocado")
@@ -89,9 +88,17 @@ def current_principal(request: Request, ctx: ConsoleContext = Depends(get_ctx)) 
     return principal
 
 
-def require(role: str):
-    """Dependency factory: the principal must hold ``role`` (admin implies viewer)."""
-    def _dependency(principal: Principal = Depends(current_principal)) -> Principal:
+def current_principal(request: Request, ctx: ConsoleContext = Depends(get_ctx)) -> Principal:
+    """Bearer token (API clients, CSRF-exempt: no cookie involved) or session cookie (browser, CSRF-checked)."""
+    return _authenticate(request, ctx)
+
+
+def require(role: str, *, touch: bool = True):
+    """Dependency factory: the principal must hold ``role`` (admin implies viewer). ``touch=False`` for a route the
+    browser opens on its own (the live stream reconnects by itself): it authenticates and expires the same, but never
+    refreshes the session."""
+    def _dependency(request: Request, ctx: ConsoleContext = Depends(get_ctx)) -> Principal:
+        principal = _authenticate(request, ctx, touch=touch)
         if not principal.has(role):
             raise ApiError(403, "forbidden", f"requiere rol {role}")
         return principal

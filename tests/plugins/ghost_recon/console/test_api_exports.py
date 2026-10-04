@@ -2,6 +2,7 @@
 audits, the preview of what goes in, a broken seal that fails the build, the audit trail, and builds that a server
 restart interrupted."""
 import hashlib
+import sqlite3
 import threading
 import time
 from dataclasses import replace
@@ -105,6 +106,32 @@ def test_a_case_has_one_pending_export_at_a_time(login_as, seeded, cstore, wait_
         gate.set()
     assert _wait_done(c, wait_until, first)["status"] == "succeeded"
     assert _export(c, seeded).status_code == 202
+
+
+def test_an_export_whose_state_writes_keep_failing_never_blocks_its_case(login_as, seeded, cstore, wait_until,
+                                                                          monkeypatch):
+    """For the build of one export the database stays locked through every retry of its final write (and the
+    worker's last attempt), so its row is left "building". The next «Exportar» of the case is still accepted once
+    that build is over, and the stuck row ends failed as interrupted instead of blocking the case until a restart."""
+    from plugins.ghost_recon.console import exports as exports_mod
+    monkeypatch.setattr(exports_mod, "STATE_WRITE_BACKOFF_S", (0.0, 0.0))
+    real_update, locked = cstore.update_export, {}
+
+    def update_export(export_id, **fields):
+        in_build = threading.current_thread().name == "gr-console-exports"  # the request's own writes go through
+        final = fields.get("status") in ("succeeded", "failed")
+        if in_build and final and locked.setdefault("id", export_id) == export_id:
+            raise sqlite3.OperationalError("database is locked")
+        return real_update(export_id, **fields)
+    monkeypatch.setattr(cstore, "update_export", update_export)
+    c = login_as("viewer")
+    stuck = _export(c, seeded).json()["export_id"]
+    fresh = wait_until(lambda: (r := _export(c, seeded)).status_code == 202 and r, timeout=20,
+                       message="a new export of the case")
+    assert locked["id"] == stuck
+    row = cstore.get_export(stuck)
+    assert row["status"] == "failed" and row["detail"] == {"code": "interrupted"} and "reinici" in row["error"]
+    assert _wait_done(c, wait_until, fresh.json()["export_id"])["status"] == "succeeded"
 
 
 def test_requests_that_could_never_build_are_refused_at_once(login_as, seeded):

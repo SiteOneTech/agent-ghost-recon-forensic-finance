@@ -1,10 +1,12 @@
 """ExportService: background builds of results ZIPs (spec §11) and their rows in ``console_exports``.
 
 A request is checked at once (``exporter.select``: a refused export never gets a row; a case with an export still
-queued or building gets ``export_pending``), then built by one worker thread, one archive at a time, with per-file
-progress in its row. The console audit log gets ``export_request`` and then ``export`` or ``export_failed``; the case
-timeline gets ``results_exported`` with the ZIP's SHA-256. After every finished build the retention pass of
-``housekeeping`` runs, so ``export_retention`` holds between its hourly passes. A build does not survive a server
+queued or building here gets ``export_pending``, while a pending row this service is not handling, left behind by a
+build whose state writes kept failing, is failed as interrupted so it never blocks the case), then built by one
+worker thread, one archive at a time, with per-file progress in its row. The console audit log gets
+``export_request`` and then ``export`` or ``export_failed``; the case timeline gets ``results_exported`` with the
+ZIP's SHA-256. After every finished build the retention pass of ``housekeeping`` runs, so ``export_retention`` holds
+between its hourly passes. A build does not survive a server
 restart: at start-up every export still queued or building is marked failed, and every file of the exports folder
 that no finished export owns (partial ``.part``, an archive whose row never succeeded) is removed, so a row never
 stays "building" forever and nothing piles up. Files of the exports folder are only ever served or removed as plain
@@ -20,7 +22,7 @@ import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Set
 
 from ..core.db import Store, utcnow
 from . import exporter, fsjail, housekeeping
@@ -76,6 +78,7 @@ class ExportService:
         self._thread: Optional[threading.Thread] = None
         self._halt = threading.Event()
         self._requests = threading.Lock()  # the pending check and the new row are one step (a double click)
+        self._owned: Set[int] = set()  # exports this service has queued or is building (guarded by _requests)
 
     # ------------------------------------------------------------------ requests
     def busy(self, case: Dict[str, Any]) -> bool:
@@ -95,15 +98,19 @@ class ExportService:
     def request(self, case: Dict[str, Any], *, scope: str, seq: Optional[str], include_unsealed: bool,
                 principal: Principal, ip: str = "") -> Dict[str, Any]:
         """Queue an export; ExportError right away when it could never be built or while the case already has one
-        queued or building (one at a time per case: the queue and the disk stay bounded)."""
+        queued or building (one at a time per case: the queue and the disk stay bounded). A pending row of the case
+        that this service neither queued nor is building is stale (its build gave up on a locked database): it is
+        failed as interrupted and never blocks the case."""
         self.selection(case, scope=scope, seq=seq, include_unsealed=include_unsealed)
         with self._requests:
-            pending = self.cstore.list_exports(statuses=EXPORT_PENDING, case_id=case["id"], limit=1)
-            if pending:
-                raise ExportError(409, "export_pending", "Ya hay una exportación en curso para este caso "
-                                  f"(#{pending[0]['id']}).", extra={"export_id": pending[0]["id"]})
+            for pending in self.cstore.list_exports(statuses=EXPORT_PENDING, case_id=case["id"]):
+                if pending["id"] in self._owned:
+                    raise ExportError(409, "export_pending", "Ya hay una exportación en curso para este caso "
+                                      f"(#{pending['id']}).", extra={"export_id": pending["id"]})
+                self._fail(pending, "interrupted", INTERRUPTED)
             row = self.cstore.create_export(case_id=case["id"], scope=scope, seq=seq if scope == "audit" else None,
                                             include_unsealed=include_unsealed, created_by=principal.username)
+            self._owned.add(row["id"])
         self.cstore.log("export_request", user_id=principal.user_id, username=principal.username, ip=ip,
                         target=f"export:{row['id']}", detail={"case_id": case["id"], "scope": scope,
                                                               "seq": row["seq"], "include_unsealed": include_unsealed})
@@ -124,6 +131,13 @@ class ExportService:
     def _inside(self, name: Optional[str]) -> Optional[Path]:
         """A plain file name that resolves directly inside the exports folder, else None."""
         return file_inside(self.dir, name)
+
+    def _discard(self, file_name: str) -> None:
+        """Remove a published archive and its sidecar that no row will ever own."""
+        for name in (file_name, f"{file_name}.sha256"):
+            path = self._inside(name)
+            if path is not None:
+                housekeeping.remove_file(path)
 
     # ------------------------------------------------------------------ building
     def build(self, export_id: int) -> Dict[str, Any]:
@@ -174,11 +188,17 @@ class ExportService:
         files = len(manifest["files"])
         detail = {"audits": [{"seq": a["seq"], "state": a["state"]} for a in manifest["audits"]],
                   "excluded": manifest["excluded"], "skipped": manifest["skipped"], "draft": manifest["draft"]}
-        if not _retrying(lambda: self.cstore.update_export(
+        try:
+            recorded = _retrying(lambda: self.cstore.update_export(
                 row["id"], expect=("building",), status="succeeded", finished_at=utcnow(), size=result["size"],
                 sha256=result["sha256"], file_name=result["file_name"], files_done=files, files_total=files,
-                detail=detail)):
-            return False  # a restart verdict already stands; the late result is not recorded
+                detail=detail))
+        except Exception:
+            self._discard(result["file_name"])  # the row never got to own the archive just published
+            raise
+        if not recorded:  # a restart or stale verdict already stands; the late result is not recorded
+            self._discard(result["file_name"])
+            return False
         self._log("export", row, {"scope": row["scope"], "seq": row["seq"], "draft": manifest["draft"],
                                   "file": result["file_name"], "size": result["size"], "sha256": result["sha256"]})
         what = row["seq"] or "caso completo"
@@ -196,6 +216,17 @@ class ExportService:
                                                            detail={"code": code})):
             return
         self._log("export_failed", row, {"code": code, "message": message})
+
+    def _give_up(self, export_id: int) -> None:
+        """The worker's last word on a build whose bookkeeping failed: one more attempt to end its row failed, so the
+        dialog stops polling. If the database still refuses, the next request for the case finds the row stale."""
+        try:
+            row = self.cstore.get_export(export_id)
+            if row and self.cstore.update_export(export_id, expect=EXPORT_PENDING, status="failed",
+                                                 finished_at=utcnow(), error=INTERNAL, detail={"code": "internal"}):
+                self._log("export_failed", row, {"code": "internal", "message": INTERNAL})
+        except Exception as exc:
+            logger.warning("ghost-recon console: export %s left pending: %s", export_id, exc)
 
     def _prune(self) -> None:
         """The retention part of housekeeping, right after a build, so ``export_retention`` holds between passes."""
@@ -228,8 +259,10 @@ class ExportService:
         if self._thread is None:  # never while a build is in flight: its .part is not an orphan
             self.recover()
             self._halt.clear()
-            while not self._queue.empty():  # leftovers of a previous run: recover() failed those rows
-                self._queue.get_nowait()
+            with self._requests:
+                while not self._queue.empty():  # leftovers of a previous run: recover() failed those rows
+                    self._queue.get_nowait()
+                self._owned.clear()
             self._thread = threading.Thread(target=self._loop, name="gr-console-exports", daemon=True)
             self._thread.start()
 
@@ -250,5 +283,9 @@ class ExportService:
                 return
             try:
                 self.build(export_id)
-            except Exception:  # a failed bookkeeping write must not end the worker; the row shows what it reached
+            except Exception:  # a failed bookkeeping write must not end the worker
                 logger.exception("ghost-recon console: export worker error on %s", export_id)
+                self._give_up(export_id)
+            finally:
+                with self._requests:
+                    self._owned.discard(export_id)

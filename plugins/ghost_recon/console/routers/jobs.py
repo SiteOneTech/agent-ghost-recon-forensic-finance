@@ -138,13 +138,14 @@ def job_events(job_id: int, after: int = Query(0, ge=0), _: Principal = Depends(
 
 @router.get("/jobs/{job_id}/events/stream")
 async def job_stream(job_id: int, request: Request, after: int = Query(0, ge=0),
-                     _: Principal = Depends(require("viewer")), ctx: ConsoleContext = Depends(get_ctx)):
+                     _: Principal = Depends(require("viewer", touch=False)), ctx: ConsoleContext = Depends(get_ctx)):
     """SSE: ``event`` frames whose id is the event's seq (a reconnect resumes after Last-Event-ID), a ``status``
     frame whenever status/phase/session/case change, ``end`` once the job is over and its events are drained, and a
     comment as heartbeat. The events file is polled every ``stream_poll`` seconds (1 s by default). Every
-    ``HEARTBEAT_S`` the stream asks again who is watching (without refreshing the session: an open stream alone never
-    keeps it alive): a disabled user or a revoked or expired session or token gets ``end`` with status
-    ``unauthenticated`` and nothing more."""
+    ``HEARTBEAT_S`` the stream asks again who is watching: a disabled user or a revoked or expired session or token
+    gets ``end`` with status ``unauthenticated`` and nothing more. Neither (re)connecting nor the re-check refreshes the
+    session (EventSource reconnects on its own and cannot send the background header): an open stream alone never
+    keeps it alive; the page load that opened it already counted."""
     _job_or_404(ctx, job_id)
     last = request.headers.get("last-event-id", "")
     start = max(after, int(last)) if last.isascii() and last.isdigit() else after

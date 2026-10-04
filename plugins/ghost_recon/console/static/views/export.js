@@ -36,17 +36,21 @@ function planView(view) {
 }
 
 /** «Descargar .zip»: a plain link (a large ZIP streams straight to disk), but each click first asks whether the ZIP
- *  is still there; only then the browser follows it. Otherwise the reason shows next to the link. */
+ *  is still there; only then the browser follows it. Otherwise the reason shows next to the link. Clicks that land
+ *  while that question is open are ignored: one download per burst of clicks. */
 function zipLink(row) {
   const link = h("a", { class: "btn", href: downloadUrl(`/exports/${row.id}/download`), download: row.file_name }, "Descargar .zip");
   const note = h("span", { class: "download-note error", role: "alert" });
   let checked = false;
+  let checking = false;
   link.addEventListener("click", async (event) => {
     if (checked) { // the re-check below passed: this is its own click, let the browser download
       checked = false;
       return;
     }
     event.preventDefault();
+    if (checking) return;
+    checking = true;
     note.textContent = "";
     try {
       const fresh = await api(`/exports/${row.id}`);
@@ -58,6 +62,8 @@ function zipLink(row) {
       note.textContent = fresh.status === "expired" ? EXPIRED : GONE;
     } catch (err) {
       note.textContent = reason(err); // a lost session answers 401 and the console asks to log in again
+    } finally {
+      checking = false;
     }
   });
   return [link, note];

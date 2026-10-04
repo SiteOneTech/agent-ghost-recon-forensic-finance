@@ -1,5 +1,5 @@
 // Console bootstrap: hash router, session bootstrap and the application shell (top bar + sidebar).
-import { api, setCsrf } from "./lib/api.js";
+import { api, forgetReturnRoute, setCsrf, takeReturnRoute, takeSessionNotice } from "./lib/api.js";
 import { h, mount } from "./lib/dom.js";
 import { noticeToggle, startWatcher, stopWatcher } from "./lib/notices.js";
 import * as caseView from "./views/case.js";
@@ -70,6 +70,7 @@ function signedOut(notice) {
   state.user = null;
   state.notice = notice || null;
   setCsrf(null);
+  forgetReturnRoute();
   stopWatcher();
   window.location.hash = "#/login";
 }
@@ -109,7 +110,7 @@ function shell(navId) {
 function onLogin(data) {
   state.user = data.user;
   setCsrf(data.csrf);
-  window.location.hash = "#/";
+  window.location.hash = takeReturnRoute(); // where the session was lost, or Inicio
 }
 
 async function render() {
@@ -124,7 +125,8 @@ async function render() {
   app.classList.remove("boot");
   if (route.public) {
     stopWatcher(); // the login view means no session: nothing to watch
-    const notice = state.notice;
+    const closed = takeSessionNotice();
+    const notice = state.notice || closed;
     state.notice = null;
     const page = await route.view.render({ params, onLogin, notice });
     if (current()) mount(app, page);

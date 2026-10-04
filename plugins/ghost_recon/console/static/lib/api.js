@@ -1,8 +1,13 @@
 // JSON client for /api/v1: cookie session plus the anti-CSRF header; a 401 sends the user to the login view.
 // `background: true` marks a request the page makes on its own (a poll): it still needs a live session but never
-// keeps one alive, so a tab nobody uses still times out.
+// keeps one alive, so a tab nobody uses still times out. When the session is gone the login view says why and, once
+// signed in again, returns to the route the user was on.
 const BASE = "/api/v1";
+const RETURN_KEY = "gr.return";
+const SESSION_CLOSED = "La sesión se cerró por inactividad. Vuelve a entrar.";
+const CONSOLE_ROUTE = /^#\/(?!\/)[A-Za-z0-9\-._~%/]*$/; // a hash route of this page, nothing else
 let csrf = null;
+let sessionClosed = false;
 
 export class ApiError extends Error {
   constructor(status, code, message, data) {
@@ -15,6 +20,49 @@ export class ApiError extends Error {
 
 export function setCsrf(token) {
   csrf = token || null;
+}
+
+/** A request outside /auth/ got 401: the session is over. Remember where the user was (this tab only) and go to
+ *  the login view. */
+function sessionLost() {
+  const here = window.location.hash;
+  if (here !== "#/login") {
+    sessionClosed = true;
+    try {
+      sessionStorage.setItem(RETURN_KEY, here);
+    } catch {
+      // storage blocked: after the login the console opens at Inicio
+    }
+  }
+  window.location.hash = "#/login";
+}
+
+/** For the login view, once: why the user is there after the session closed (or null). */
+export function takeSessionNotice() {
+  const closed = sessionClosed;
+  sessionClosed = false;
+  return closed ? SESSION_CLOSED : null;
+}
+
+/** Forget the route to return to (an explicit logout starts over at Inicio). */
+export function forgetReturnRoute() {
+  try {
+    sessionStorage.removeItem(RETURN_KEY);
+  } catch {
+    // storage blocked: nothing was remembered
+  }
+}
+
+/** After a login, once: the console route the session was lost on, or Inicio. */
+export function takeReturnRoute() {
+  let route = null;
+  try {
+    route = sessionStorage.getItem(RETURN_KEY);
+  } catch {
+    // storage blocked: back to Inicio
+  }
+  forgetReturnRoute();
+  return route && CONSOLE_ROUTE.test(route) && route !== "#/login" ? route : "#/";
 }
 
 /** Same-origin URL of an API path, for plain links (a large ZIP downloads straight to disk this way). */
@@ -37,7 +85,7 @@ async function failure(res, path) {
   } catch {
     // not a JSON envelope: keep the HTTP status text
   }
-  if (res.status === 401 && !path.startsWith("/auth/")) window.location.hash = "#/login";
+  if (res.status === 401 && !path.startsWith("/auth/")) sessionLost();
   return new ApiError(res.status, err.code || `http_${res.status}`, err.message || res.statusText, null);
 }
 
@@ -81,7 +129,7 @@ export async function api(path, { method = "GET", body, query, background = fals
   const data = isJson ? await res.json() : null;
   if (!res.ok) {
     const err = (data && data.error) || {};
-    if (res.status === 401 && !path.startsWith("/auth/")) window.location.hash = "#/login";
+    if (res.status === 401 && !path.startsWith("/auth/")) sessionLost();
     throw new ApiError(res.status, err.code || `http_${res.status}`, err.message || res.statusText, data);
   }
   return data;
