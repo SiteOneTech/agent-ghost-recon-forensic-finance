@@ -151,19 +151,32 @@ def test_directory_junctions_escaping_root_are_not_listed_or_walked(root, tmp_pa
     import subprocess
     secret = tmp_path / "secreto"
     secret.mkdir()
-    (secret / "hidden.txt").write_text("x", encoding="utf-8")
+    for i in range(3):
+        (secret / f"hidden{i}.txt").write_text("x", encoding="utf-8")
     junction = root / "Nueva B" / "junction_to_secret"
     subprocess.run(["cmd", "/c", "mklink", "/J", str(junction), str(secret)], check=True)
     roots = fsjail.configured_roots([str(root)])
+
     # Junction should not be listed
-    names = [i["name"] for i in fsjail.list_dir(str(root / "Nueva B"), roots, store=store, audits_dirname=AUDITS)["items"]]
+    listing = fsjail.list_dir(str(root / "Nueva B"), roots, store=store, audits_dirname=AUDITS)
+    names = [i["name"] for i in listing["items"]]
     assert "junction_to_secret" not in names
+
+    # Nueva B's reported file count must not include junction files (should be 3 csv files only)
+    assert listing["files"] == 3, f"Expected 3 files (csv only), got {listing['files']} (junction leaked {listing['files'] - 3})"
+
+    # Parent listing should also not count junction files in the subfolder
+    parent_listing = fsjail.list_dir(str(root), roots, store=store, audits_dirname=AUDITS)
+    nueva_b_item = next(i for i in parent_listing["items"] if i["name"] == "Nueva B")
+    assert nueva_b_item["files"] == 3, f"Parent list: Nueva B should have 3 files, got {nueva_b_item['files']}"
+
     # Junction should not be found by search
     results = fsjail.search("secret", roots)
     assert not any(i["name"] == "secreto" for i in results["items"])
-    # Junction's files should not be counted in Nueva B
+
+    # Junction's files should not be counted in Nueva B's inspect
     info = fsjail.inspect(str(root / "Nueva B"), roots, store=store, audits_dirname=AUDITS, defaults={})
-    assert info["files"] == 3  # only the original 3 .csv files, not the hidden.txt from junction
+    assert info["files"] == 3  # only the original 3 .csv files, not the 3 hidden files from junction
 
 
 @pytest.mark.platforms("posix")

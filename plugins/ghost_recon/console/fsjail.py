@@ -108,6 +108,14 @@ def _entry_inside_roots(entry: os.DirEntry, roots: Sequence[Path]) -> bool:
         return False
 
 
+def _dir_inside_roots(dirpath: str, roots: Sequence[Path]) -> bool:
+    """Check whether a directory path (from os.walk) is inside the roots; for use in dirname prunes."""
+    try:
+        return resolve_within(dirpath, roots) is not None
+    except OSError:
+        return False
+
+
 def _subfolders(folder: Path, roots: Sequence[Path], skip: Sequence[str]) -> List[Path]:
     """Visible subfolders that resolve inside the roots (blocks symlinks, junctions, and cross-root escapes)."""
     try:
@@ -129,15 +137,16 @@ def _subfolders(folder: Path, roots: Sequence[Path], skip: Sequence[str]) -> Lis
     return sorted(found, key=lambda p: p.name.casefold())
 
 
-def count_files(folder: Path, skip: Sequence[str] = (), cap: int = COUNT_CAP) -> Dict[str, Any]:
-    """Files under ``folder`` (hidden entries, symlinks and ``skip`` folders excluded), stopping at ``cap``."""
+def count_files(folder: Path, skip: Sequence[str] = (), cap: int = COUNT_CAP, roots: Sequence[Path] = ()) -> Dict[str, Any]:
+    """Files under ``folder`` (hidden entries, symlinks, non-contained dirs and ``skip`` folders excluded), stopping at ``cap``."""
     total = 0
-    for _dirpath, dirnames, filenames in os.walk(folder):
-        dirnames[:] = [d for d in dirnames if _visible_name(d) and d not in skip]
+    for dirpath, dirnames, filenames in os.walk(folder):
+        dirnames[:] = [d for d in dirnames if _visible_name(d) and d not in skip and
+                       (not roots or _dir_inside_roots(str(Path(dirpath) / d), roots))]
         for f in filenames:
             if not _visible_name(f):
                 continue
-            fpath = Path(_dirpath) / f
+            fpath = Path(dirpath) / f
             try:
                 if fpath.is_symlink():
                     continue
@@ -211,10 +220,10 @@ def list_dir(raw: str, roots: Sequence[Path], *, store: Store, audits_dirname: s
         breadcrumb.append({"name": part, "path": str(current)})
     skip = (audits_dirname,)
     items = [{"name": p.name, "path": str(p), "case": _mark(existing_case(store, p, audits_dirname)),
-              **count_files(p, skip)} for p in _subfolders(folder, roots, skip)]
+              **count_files(p, skip, roots=roots)} for p in _subfolders(folder, roots, skip)]
     return {"path": str(folder), "name": folder.name or str(folder), "root": str(root),
             "parent": str(folder.parent) if folder != root else None, "breadcrumb": breadcrumb,
-            "case": _mark(existing_case(store, folder, audits_dirname)), **count_files(folder, skip), "items": items}
+            "case": _mark(existing_case(store, folder, audits_dirname)), **count_files(folder, skip, roots=roots), "items": items}
 
 
 def search(query: str, roots: Sequence[Path], *, skip: Sequence[str] = (), max_depth: int = MAX_SEARCH_DEPTH,
@@ -257,7 +266,7 @@ def inspect(raw: str, roots: Sequence[Path], *, store: Store, audits_dirname: st
     capped = False
     for dirpath, dirnames, filenames in os.walk(folder):
         dirnames[:] = [d for d in dirnames if _visible_name(d) and d != audits_dirname and
-                       resolve_within(str(Path(dirpath) / d), roots) is not None]
+                       _dir_inside_roots(str(Path(dirpath) / d), roots)]
         for name in filenames:
             if not _visible_name(name):
                 continue
