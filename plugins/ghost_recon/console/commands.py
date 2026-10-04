@@ -28,7 +28,8 @@ NO_ROOTS_MESSAGE = ("La consola no tiene carpetas de casos configuradas. Pide a 
                     "la carpeta de casos en case_roots (config.yaml → plugins.entries.ghost-recon.settings.console) "
                     "y reinicie la consola.")
 NO_CONTEXT = "none"  # LaunchRequest.context_sha256 when the preview showed no context.md
-CONTEXT_CHANGED_MESSAGE = "El context.md de la carpeta cambió desde la vista previa: revísalo de nuevo y vuelve a lanzar."
+CONTEXT_CHANGED_MESSAGE = ("El context.md de la carpeta cambió desde la vista previa: revísalo de nuevo y vuelve a "
+                           "lanzar.")
 MISSING_ROOTS_MESSAGE = ("Ninguna de las carpetas de casos configuradas en case_roots existe en esta máquina. Pide a "
                          "quien administra la máquina que la cree o corrija la configuración.")
 
