@@ -10,6 +10,7 @@ import hashlib
 import hmac
 import re
 import secrets
+import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Callable, Dict, List, Optional, Tuple
@@ -124,6 +125,7 @@ class AuthService:
         self.clock = clock
         self._failures: Dict[str, List[datetime]] = {}
         self._locked_until: Dict[str, datetime] = {}
+        self._last_admin_lock = threading.Lock()  # protects last-admin checks from concurrent demote/disable
 
     # ------------------------------------------------------------------ accounts
     def add_user(self, username: str, password: str, role: str) -> Dict:
@@ -146,9 +148,10 @@ class AuthService:
 
     def set_disabled(self, username: str, disabled: bool) -> None:
         user = self._require_user(username)
-        if disabled and self._is_last_active_admin(user):
-            raise AccountConflict("no se puede deshabilitar el último admin activo")
-        self.cstore.update_user(user["username"], disabled=1 if disabled else 0)
+        with self._last_admin_lock:
+            if disabled and self._is_last_active_admin(user):
+                raise AccountConflict("no se puede deshabilitar el último admin activo")
+            self.cstore.update_user(user["username"], disabled=1 if disabled else 0)
         if disabled:
             self.cstore.revoke_user_sessions(user["id"])
 
@@ -157,9 +160,10 @@ class AuthService:
         if role not in ROLES:
             raise AccountError(f"rol debe ser uno de {ROLES}")
         user = self._require_user(username)
-        if role != "admin" and self._is_last_active_admin(user):
-            raise AccountConflict("no se puede quitar el rol admin al último admin activo")
-        self.cstore.update_user(user["username"], role=role)
+        with self._last_admin_lock:
+            if role != "admin" and self._is_last_active_admin(user):
+                raise AccountConflict("no se puede quitar el rol admin al último admin activo")
+            self.cstore.update_user(user["username"], role=role)
 
     def _is_last_active_admin(self, user: Dict) -> bool:
         return user["role"] == "admin" and not user["disabled"] and self.cstore.count_active_admins() <= 1

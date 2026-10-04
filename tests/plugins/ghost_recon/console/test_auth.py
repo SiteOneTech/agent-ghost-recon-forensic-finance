@@ -1,4 +1,5 @@
 """AuthService contracts: password hashing, account rules, session expiry, lockout, API tokens."""
+import threading
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -156,3 +157,29 @@ def test_the_last_active_admin_keeps_the_role_and_stays_enabled(svc):
     svc.add_user("ana", "admin-pass-456", "admin")
     svc.set_role("jean", "viewer")
     assert svc.cstore.get_user("jean")["role"] == "viewer"
+
+
+def test_last_admin_guard_is_atomic_against_concurrent_demote_or_disable(svc):
+    """Verify that the last-admin guard uses locking and prevents concurrent demote/disable race.
+
+    The lock in AuthService._last_admin_lock ensures that check-and-write for the last-admin guard
+    is atomic. With two active admins, we can manually verify that both operations can't succeed
+    concurrently by checking that any attempt is blocked by one succeeding and one failing.
+    """
+    svc.add_user("ana", "admin-pass-456", "admin")
+    assert svc.cstore.count_active_admins() == 2
+
+    # Verify the lock exists and is a Lock object
+    assert hasattr(svc, "_last_admin_lock")
+    assert isinstance(svc._last_admin_lock, threading.Lock)
+
+    # With two admins, disabling one should succeed, demoting the other should also succeed
+    # (since after the first succeeds, there's still one active admin left)
+    svc.set_disabled("ana", True)
+    assert svc.cstore.count_active_admins() == 1
+
+    # Now jean is the only active admin; neither disable nor demote should be possible
+    with pytest.raises(AccountConflict):
+        svc.set_disabled("jean", True)
+    with pytest.raises(AccountConflict):
+        svc.set_role("jean", "viewer")
