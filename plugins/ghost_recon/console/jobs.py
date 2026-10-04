@@ -94,9 +94,12 @@ class JobService:
             if p["notes"]:
                 commands.write_combined_context(p, principal.username, utcnow(), self.roots())
             case_id = p["case"]["id"] if p["case"] and p["case"]["source"] == "db" else None
+            target = self.settings.notify_target
+            # Planned here like the agent argv: the runner has no Hermes config, it only appends the summary.
+            notify_argv = self.hermes_command(commands.notify_args(target, procs.profile_args())) if target else []
             job = self.cstore.create_job(command=p["command"], folder=p["folder"], args=p["args"], argv=p["argv"],
                                          launched_by=principal.username, context_file=p["context_file"] or None,
-                                         case_id=case_id)
+                                         case_id=case_id, notify_target=target or None, notify_argv=notify_argv)
             self.cstore.log("job_launch", user_id=principal.user_id, username=principal.username, ip=ip,
                             target=f"job:{job['id']}", detail={"command": p["command"], "folder": p["folder"],
                                                                "case_id": case_id})
@@ -200,16 +203,17 @@ class JobService:
                 del self._children[job_id]
 
     def _start_runner(self, job: Dict[str, Any]) -> bool:
-        log = open(jobfiles.runner_log_path(self.jobs_dir, job["id"]), "ab")
+        """Spawn the job's detached runner. Whatever fails here (the runner log, the launcher, the process table)
+        fails this job only: the dispatch pass goes on with the next one."""
         try:
-            proc = procs.spawn_detached(self.runner_command(job["id"]), cwd=procs.hermes_root(),
-                                        env=procs.child_env(), stderr=log)
-        except OSError as exc:
+            with open(jobfiles.runner_log_path(self.jobs_dir, job["id"]), "ab") as log:
+                proc = procs.spawn_detached(self.runner_command(job["id"]), cwd=procs.hermes_root(),
+                                            env=procs.child_env(), stderr=log)
+        except Exception as exc:
+            logger.exception("ghost-recon console: job %s could not start", job["id"])
             self.cstore.update_job(job["id"], expect=("queued",), status="failed", finished_at=utcnow(),
                                    error=f"no se pudo iniciar la ejecución: {exc}")
             return False
-        finally:
-            log.close()
         self._children[job["id"]] = proc  # reaped by _reap whatever happens next
         started = procs.identity(proc.pid)
         if started is None:  # one retry; a runner that cannot be fingerprinted never runs unidentified

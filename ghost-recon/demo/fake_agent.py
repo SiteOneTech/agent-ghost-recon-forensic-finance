@@ -15,6 +15,10 @@ Keys: ``steps`` (delegated blocks), ``delay`` (seconds per step), ``exit_code``,
 ``open_case`` (really open the case in the Ghost Recon DB on /new-open-case; default true), ``record_argv`` (path
 where the full argv is written as JSON), ``record_cwd`` (path where the working directory is written) and
 ``write_relative`` (a file name written with a RELATIVE path, as a careless tool call would).
+
+It also stands in for ``hermes … send --to … --subject … "<message>"`` (the job-end notice): with ``send`` among the
+arguments and no ``-q`` it writes its argv as JSON to the default behaviour's ``record_send`` path and exits with
+``send_exit_code`` (default 0).
 """
 
 from __future__ import annotations
@@ -60,12 +64,22 @@ def open_case(folder: Path):
     return service.open_case(runtime.store(), str(folder), audits_dir=str(runtime.setting("audits_dirname")))
 
 
+def send(config_path: str) -> int:
+    """``hermes send`` stand-in: records its argv and exits with the configured code."""
+    cfg = behaviour(config_path, "")
+    if cfg.get("record_send"):
+        Path(cfg["record_send"]).write_text(json.dumps(sys.argv, ensure_ascii=False), encoding="utf-8")
+    return int(cfg.get("send_exit_code", 0))
+
+
 def main() -> int:
     sys.stdout.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser()
     parser.add_argument("--fake-config", default="")
     parser.add_argument("-q", "--query", default="")
-    args, _hermes_flags = parser.parse_known_args()
+    args, hermes_args = parser.parse_known_args()
+    if not args.query and "send" in hermes_args:
+        return send(args.fake_config)
     match = _FOLDER_RE.match(args.query)
     if not match:
         print(f"fake agent: no case folder in -q: {args.query!r}", file=sys.stderr)

@@ -18,6 +18,8 @@ from . import fsjail
 from .paths import resolve_within
 
 SOURCE_TAG = "ghost-recon-console"
+NOTIFY_SUBJECT = "[Ghost Recon]"
+ORDER_LABELS = {"new-open-case": "Nueva auditoría", "rerun-case": "Re-run", "review-case": "Review"}
 MAX_NAME = 120
 MAX_NOTES = 20_000
 LANGS = ("es", "en")
@@ -168,6 +170,12 @@ def agent_args(skill: str, query: str, profile_args: Sequence[str]) -> List[str]
     """Hermes arguments of a console job (spec §6.1); ``--format stream-json`` implies ``--quiet``."""
     return [*profile_args, "--cli", "--accept-hooks", "--skills", skill, "chat", "-q", query,
             "--format", "stream-json", "--source", SOURCE_TAG]
+
+
+def notify_args(target: str, profile_args: Sequence[str]) -> List[str]:
+    """Hermes arguments of the job-end notice (spec §6.2): ``-p <perfil> send --to <destino> --subject "[Ghost
+    Recon]"``. The runner appends the summary as the message; no LLM and no running gateway are involved."""
+    return [*profile_args, "send", "--to", target, "--subject", NOTIFY_SUBJECT]
 
 
 def plan(req: LaunchRequest, *, store: Store, roots: Sequence[Path], audits_dirname: str, username: str,
